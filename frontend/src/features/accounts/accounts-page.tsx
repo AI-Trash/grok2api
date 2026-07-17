@@ -693,8 +693,8 @@ export function AccountsPage() {
                 {provider === "grok_build" ? (
                   <TableHead className="whitespace-nowrap pl-4">
                     <Tooltip>
-                      <TooltipTrigger asChild><span className="cursor-help">{t("accountCredential.botFlagSource")}</span></TooltipTrigger>
-                      <TooltipContent>{t("accountCredential.botFlagSourceTooltip")}</TooltipContent>
+                      <TooltipTrigger asChild><span className="cursor-help">{t("accountCredential.botFlag")}</span></TooltipTrigger>
+                      <TooltipContent>{t("accountCredential.botFlagTooltip")}</TooltipContent>
                     </Tooltip>
                   </TableHead>
                 ) : null}
@@ -742,13 +742,11 @@ export function AccountsPage() {
                       ) : <span className="font-medium text-amber-700 dark:text-amber-300">{t("accountCredential.noAutoRefresh")}</span>}
                     </TableCell> : null}
                     {provider === "grok_build" ? (
-                      <TableCell className="whitespace-nowrap pl-4 text-xs">
-                        {account.hasBotFlagSource === true ? (
-                          <span className="font-medium text-emerald-700 dark:text-emerald-300">{t("accountCredential.botFlagSourcePresent")}</span>
-                        ) : account.hasBotFlagSource === false ? (
-                          <span className="font-medium text-amber-700 dark:text-amber-300">{t("accountCredential.botFlagSourceAbsent")}</span>
+                      <TableCell className="min-w-0 whitespace-nowrap pl-4 text-xs">
+                        {account.botFlag ? (
+                          <span className="truncate font-medium" title={account.botFlag}>{account.botFlag}</span>
                         ) : (
-                          <span className="text-muted-foreground">{t("accountCredential.botFlagSourceUnknown")}</span>
+                          <span className="text-muted-foreground">{t("accountCredential.botFlagEmpty")}</span>
                         )}
                       </TableCell>
                     ) : null}

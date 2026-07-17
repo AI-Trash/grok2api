@@ -255,7 +255,7 @@ type accountResponse struct {
 	ObservedModel              string                `json:"observedModel,omitempty"`
 	ObservedModelAt            *time.Time            `json:"observedModelAt,omitempty"`
 	CloudflareCookieConfigured bool                  `json:"cloudflareCookieConfigured"`
-	HasBotFlagSource           *bool                 `json:"hasBotFlagSource,omitempty"`
+	BotFlag                    *string               `json:"botFlag,omitempty"`
 	Billing                    *billingResponse      `json:"billing,omitempty"`
 	Quota                      quotaResponse         `json:"quota"`
 	QuotaWindows               []quotaWindowResponse `json:"quotaWindows,omitempty"`
@@ -1045,7 +1045,7 @@ func newAccountResponse(value accountapp.View) accountResponse {
 		LastUsedAt: c.LastUsedAt, LinkedAccountID: c.LinkedAccountID, LinkedName: c.LinkedAccountName, LinkedProvider: string(c.LinkedProvider),
 		CreatedAt: c.CreatedAt, ObservedModel: c.ObservedModel, ObservedModelAt: c.ObservedModelAt,
 		CloudflareCookieConfigured: c.EncryptedCloudflareCookie != "",
-		HasBotFlagSource:           value.HasBotFlagSource,
+		BotFlag:                    value.BotFlag,
 		Quota:                      newQuotaResponse(value.Quota), QuotaWindows: make([]quotaWindowResponse, 0, len(value.QuotaWindows)),
 	}
 	for _, window := range value.QuotaWindows {

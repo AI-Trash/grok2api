@@ -93,31 +93,60 @@ func HashToken(raw string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// JWTPayloadHasClaim 在不校验签名的情况下解析 JWT payload，判断指定 claim 是否存在。
-// ok=false 表示输入不是可解码的 JWT；present 仅在 ok=true 时有意义。
-func JWTPayloadHasClaim(raw, claim string) (present bool, ok bool) {
+// JWTPayloadClaim 在不校验签名的情况下解析 JWT payload，读取指定 claim 的展示值。
+// ok=false 表示输入不是可解码的 JWT；found 表示 claim 键存在；value 为字符串化后的 claim 值。
+// null claim 返回 found=true 且 value 为空字符串。
+func JWTPayloadClaim(raw, claim string) (value string, found bool, ok bool) {
 	raw = strings.TrimSpace(raw)
 	claim = strings.TrimSpace(claim)
 	if raw == "" || claim == "" {
-		return false, false
+		return "", false, false
 	}
 	parts := strings.Split(raw, ".")
 	if len(parts) < 2 || parts[1] == "" {
-		return false, false
+		return "", false, false
 	}
 	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
 		payload, err = base64.URLEncoding.DecodeString(parts[1])
 		if err != nil {
-			return false, false
+			return "", false, false
 		}
 	}
 	var claims map[string]json.RawMessage
 	if err := json.Unmarshal(payload, &claims); err != nil {
-		return false, false
+		return "", false, false
 	}
-	_, present = claims[claim]
-	return present, true
+	rawValue, found := claims[claim]
+	if !found {
+		return "", false, true
+	}
+	return formatJWTClaimValue(rawValue), true, true
+}
+
+func formatJWTClaimValue(raw json.RawMessage) string {
+	if len(raw) == 0 || string(raw) == "null" {
+		return ""
+	}
+	// bot_flag_source 等 claim 的已知形态为数字（例如 1），优先按 number 解析，避免被其它类型误读。
+	decoder := json.NewDecoder(strings.NewReader(string(raw)))
+	decoder.UseNumber()
+	var asNumber json.Number
+	if err := decoder.Decode(&asNumber); err == nil {
+		return asNumber.String()
+	}
+	var asString string
+	if err := json.Unmarshal(raw, &asString); err == nil {
+		return asString
+	}
+	var asBool bool
+	if err := json.Unmarshal(raw, &asBool); err == nil {
+		if asBool {
+			return "true"
+		}
+		return "false"
+	}
+	return strings.TrimSpace(string(raw))
 }
 
 // FormatClientKey 生成 g2a_<prefix>_<secret> 格式的客户端 Key。

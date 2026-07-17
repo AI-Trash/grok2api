@@ -89,7 +89,7 @@ export type AccountDTO = {
   linkedAccountName?: string;
   linkedProvider?: "grok_build" | "grok_web";
   createdAt: string;
-  hasBotFlagSource?: boolean;
+  botFlag?: string;
   billing?: BillingDTO;
   quota: QuotaDTO;
   quotaWindows?: Array<{ mode: string; remaining: number; total: number; usagePercent: number; breakdown?: Array<{ productCode: number; usagePercent: number }>; windowSeconds: number; resetAt?: string; syncedAt?: string; source: "default" | "estimated" | "upstream" }>;
@@ -163,7 +163,7 @@ const accountValidator = hasShape({
   lastRefreshErrorCode: isOptional(isString), priority: isNumber, maxConcurrent: isNumber, minimumRemaining: isNumber,
   failureCount: isNumber, cooldownUntil: isOptional(isString), lastError: isOptional(isString), lastUsedAt: isOptional(isString),
   linkedAccountId: isOptional(isString), linkedAccountName: isOptional(isString), linkedProvider: isOptional(isOneOf("grok_build", "grok_web")),
-  createdAt: isString, hasBotFlagSource: isOptional(isBoolean), billing: isOptional(billingValidator), quota: quotaValidator, quotaWindows: isOptional(isArrayOf(quotaWindowValidator)),
+  createdAt: isString, botFlag: isOptional(isString), billing: isOptional(billingValidator), quota: quotaValidator, quotaWindows: isOptional(isArrayOf(quotaWindowValidator)),
 });
 const decodeBilling = createValidatedDecoder<BillingDTO>("billing", billingValidator);
 const decodeAccount = createValidatedDecoder<AccountDTO>("account", accountValidator);

@@ -106,9 +106,9 @@ type View struct {
 	Billing      *accountdomain.Billing
 	Quota        QuotaView
 	QuotaWindows []accountdomain.QuotaWindow
-	// HasBotFlagSource 表示 Grok Build access token JWT 是否包含 bot_flag_source claim。
-	// nil 表示不适用、无法解密或 JWT 不可解析。
-	HasBotFlagSource *bool
+	// BotFlag 为 Grok Build access token JWT 中 bot_flag_source claim 的展示值。
+	// nil 表示不适用、无法解密、JWT 不可解析或 claim 不存在。
+	BotFlag *string
 }
 
 type UpdateInput struct {
@@ -445,11 +445,11 @@ func (s *Service) withAccessTokenClaims(view View) View {
 	if err != nil || strings.TrimSpace(token) == "" {
 		return view
 	}
-	present, ok := security.JWTPayloadHasClaim(token, "bot_flag_source")
-	if !ok {
+	value, found, ok := security.JWTPayloadClaim(token, "bot_flag_source")
+	if !ok || !found {
 		return view
 	}
-	view.HasBotFlagSource = &present
+	view.BotFlag = &value
 	return view
 }
 
