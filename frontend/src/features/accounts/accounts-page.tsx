@@ -663,12 +663,13 @@ export function AccountsPage() {
           <Table className="table-fixed border-collapse min-w-[780px] xl:min-w-[960px] 2xl:min-w-[1080px]">
             <colgroup>
               <col style={{ width: "3%" }} />
-              <col style={{ width: "15%" }} />
+              <col style={{ width: "14%" }} />
               <col style={{ width: "7%" }} />
               <col style={{ width: "7%" }} />
-              <col style={{ width: provider === "grok_build" ? "30%" : "46%" }} />
-              {provider === "grok_build" ? <col style={{ width: "16%" }} /> : null}
-              <col style={{ width: "18%" }} />
+              <col style={{ width: provider === "grok_build" ? "24%" : "46%" }} />
+              {provider === "grok_build" ? <col style={{ width: "14%" }} /> : null}
+              {provider === "grok_build" ? <col style={{ width: "12%" }} /> : null}
+              <col style={{ width: provider === "grok_build" ? "15%" : "18%" }} />
               <col style={{ width: "4%" }} />
             </colgroup>
             <TableHeader>
@@ -679,12 +680,20 @@ export function AccountsPage() {
                 <SortableTableHead field="status" sortBy={sort.field} sortOrder={sort.order} align="center" onSort={changeSort} className="whitespace-nowrap">{t("accounts.status")}</SortableTableHead>
                 <TableHead className={cn("whitespace-nowrap", provider !== "grok_build" && "px-6")}>{t("accounts.quota")}</TableHead>
                 {provider === "grok_build" ? <TableHead className="whitespace-nowrap pl-4">{t("accountCredential.label")}</TableHead> : null}
+                {provider === "grok_build" ? (
+                  <TableHead className="whitespace-nowrap pl-4">
+                    <Tooltip>
+                      <TooltipTrigger asChild><span className="cursor-help">{t("accountCredential.botFlagSource")}</span></TooltipTrigger>
+                      <TooltipContent>{t("accountCredential.botFlagSourceTooltip")}</TooltipContent>
+                    </Tooltip>
+                  </TableHead>
+                ) : null}
                 <SortableTableHead field="createdAt" sortBy={sort.field} sortOrder={sort.order} initialOrder="desc" onSort={changeSort} className="whitespace-nowrap">{t("accounts.createdAt")}</SortableTableHead>
                 <TableActionHead />
               </TableRow>
             </TableHeader>
             <TableBody>
-              {accountsQuery.isPending ? <TableLoadingRow colSpan={provider === "grok_build" ? 8 : 7} /> : result?.items.map((account) => {
+              {accountsQuery.isPending ? <TableLoadingRow colSpan={provider === "grok_build" ? 9 : 7} /> : result?.items.map((account) => {
                 const accountDetail = account.email ?? account.userId ?? account.teamId;
                 const showAccountDetail = accountDetail?.trim().toLocaleLowerCase() !== account.name.trim().toLocaleLowerCase();
                 const linkedProviderLabel = account.linkedProvider === "grok_build" ? t("models.providerGrokBuild") : account.linkedProvider === "grok_web" ? t("models.providerGrokWeb") : t("console.name");
@@ -722,6 +731,17 @@ export function AccountsPage() {
                         </Tooltip>
                       ) : <span className="font-medium text-amber-700 dark:text-amber-300">{t("accountCredential.noAutoRefresh")}</span>}
                     </TableCell> : null}
+                    {provider === "grok_build" ? (
+                      <TableCell className="whitespace-nowrap pl-4 text-xs">
+                        {account.hasBotFlagSource === true ? (
+                          <span className="font-medium text-emerald-700 dark:text-emerald-300">{t("accountCredential.botFlagSourcePresent")}</span>
+                        ) : account.hasBotFlagSource === false ? (
+                          <span className="font-medium text-amber-700 dark:text-amber-300">{t("accountCredential.botFlagSourceAbsent")}</span>
+                        ) : (
+                          <span className="text-muted-foreground">{t("accountCredential.botFlagSourceUnknown")}</span>
+                        )}
+                      </TableCell>
+                    ) : null}
                     <TableCell className="whitespace-nowrap text-xs text-muted-foreground">{formatDateTime(account.createdAt, i18n.language)}</TableCell>
                     <TableActionCell>
                       <DropdownMenu>

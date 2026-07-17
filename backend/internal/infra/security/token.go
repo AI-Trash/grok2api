@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -90,6 +91,33 @@ func NewHexToken(bytesLength int) (string, error) {
 func HashToken(raw string) string {
 	sum := sha256.Sum256([]byte(raw))
 	return hex.EncodeToString(sum[:])
+}
+
+// JWTPayloadHasClaim 在不校验签名的情况下解析 JWT payload，判断指定 claim 是否存在。
+// ok=false 表示输入不是可解码的 JWT；present 仅在 ok=true 时有意义。
+func JWTPayloadHasClaim(raw, claim string) (present bool, ok bool) {
+	raw = strings.TrimSpace(raw)
+	claim = strings.TrimSpace(claim)
+	if raw == "" || claim == "" {
+		return false, false
+	}
+	parts := strings.Split(raw, ".")
+	if len(parts) < 2 || parts[1] == "" {
+		return false, false
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		payload, err = base64.URLEncoding.DecodeString(parts[1])
+		if err != nil {
+			return false, false
+		}
+	}
+	var claims map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return false, false
+	}
+	_, present = claims[claim]
+	return present, true
 }
 
 // FormatClientKey 生成 g2a_<prefix>_<secret> 格式的客户端 Key。

@@ -106,6 +106,9 @@ type View struct {
 	Billing      *accountdomain.Billing
 	Quota        QuotaView
 	QuotaWindows []accountdomain.QuotaWindow
+	// HasBotFlagSource 表示 Grok Build access token JWT 是否包含 bot_flag_source claim。
+	// nil 表示不适用、无法解密或 JWT 不可解析。
+	HasBotFlagSource *bool
 }
 
 type UpdateInput struct {
@@ -348,7 +351,7 @@ func (s *Service) List(ctx context.Context, page, pageSize int, search string, f
 		}
 		view.Quota = newQuotaView(view.Billing, observedTokens[value.ID], recovery, value.ObservedModel)
 		view.QuotaWindows = quotaWindows[value.ID]
-		views = append(views, view)
+		views = append(views, s.withAccessTokenClaims(view))
 	}
 	return views, total, nil
 }
@@ -430,7 +433,24 @@ func (s *Service) Get(ctx context.Context, id uint64) (View, error) {
 	} else {
 		return View{}, err
 	}
-	return view, nil
+	return s.withAccessTokenClaims(view), nil
+}
+
+// withAccessTokenClaims 从加密 access token 中解析 JWT claim 展示字段，不向外暴露原始令牌。
+func (s *Service) withAccessTokenClaims(view View) View {
+	if view.Credential.Provider != accountdomain.ProviderBuild || view.Credential.EncryptedAccessToken == "" || s.cipher == nil {
+		return view
+	}
+	token, err := s.cipher.Decrypt(view.Credential.EncryptedAccessToken)
+	if err != nil || strings.TrimSpace(token) == "" {
+		return view
+	}
+	present, ok := security.JWTPayloadHasClaim(token, "bot_flag_source")
+	if !ok {
+		return view
+	}
+	view.HasBotFlagSource = &present
+	return view
 }
 
 func (s *Service) ObserveResponseModel(ctx context.Context, id uint64, model string) error {
