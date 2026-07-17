@@ -1198,10 +1198,6 @@ func (s *Service) convertWebAccountToBuild(ctx context.Context, id uint64, strat
 
 // ExportCredentials 导出可由当前导入接口重新读取的 Grok Build OAuth 凭据文档。
 func (s *Service) ExportCredentials(ctx context.Context) (ExportResult, error) {
-	adapter, ok := s.providers.CredentialCodec(accountdomain.ProviderBuild)
-	if !ok {
-		return ExportResult{}, fmt.Errorf("CLI Provider 未注册")
-	}
 	values, total, err := s.accounts.List(ctx, repository.AccountListQuery{
 		Page:   repository.PageQuery{Limit: maxCredentialExportAccounts + 1},
 		Filter: repository.AccountListFilter{Provider: string(accountdomain.ProviderBuild), Now: s.now()},
@@ -1211,6 +1207,26 @@ func (s *Service) ExportCredentials(ctx context.Context) (ExportResult, error) {
 	}
 	if total > maxCredentialExportAccounts {
 		return ExportResult{}, fmt.Errorf("%w: 单次最多导出 10000 个账号", ErrExportLimit)
+	}
+	return s.exportBuildCredentials(values)
+}
+
+// ExportCredential 导出单个 Grok Build 账号的 OAuth 凭据文档，格式与批量导出/导入一致。
+func (s *Service) ExportCredential(ctx context.Context, id uint64) (ExportResult, error) {
+	value, err := s.accounts.Get(ctx, id)
+	if err != nil {
+		return ExportResult{}, mapRepositoryError(err)
+	}
+	if value.Provider != accountdomain.ProviderBuild {
+		return ExportResult{}, ErrUnsupported
+	}
+	return s.exportBuildCredentials([]accountdomain.Credential{value})
+}
+
+func (s *Service) exportBuildCredentials(values []accountdomain.Credential) (ExportResult, error) {
+	adapter, ok := s.providers.CredentialCodec(accountdomain.ProviderBuild)
+	if !ok {
+		return ExportResult{}, fmt.Errorf("CLI Provider 未注册")
 	}
 	seeds := make([]provider.CredentialSeed, 0, len(values))
 	for _, value := range values {

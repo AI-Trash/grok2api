@@ -147,6 +147,7 @@ func (h *Handler) Register(router *gin.RouterGroup) {
 	router.DELETE("/accounts", h.batchDelete)
 	router.PATCH("/accounts/:id", h.update)
 	router.DELETE("/accounts/:id", h.delete)
+	router.GET("/accounts/:id/export", h.exportCredential)
 	router.POST("/accounts/:id/refresh-token", h.refreshToken)
 	router.POST("/accounts/:id/refresh-billing", h.refreshBilling)
 	router.POST("/accounts/:id/refresh-quota", h.refreshWebQuota)
@@ -875,7 +876,23 @@ func (h *Handler) exportCredentials(c *gin.Context) {
 		h.writeServiceError(c, "accountExportFailed", err, http.StatusInternalServerError, "导出账号失败")
 		return
 	}
-	filename := "grok2api-accounts-" + time.Now().UTC().Format("20060102T150405Z") + ".json"
+	writeCredentialExport(c, "grok2api-accounts-"+time.Now().UTC().Format("20060102T150405Z")+".json", result)
+}
+
+func (h *Handler) exportCredential(c *gin.Context) {
+	id, ok := pathID(c)
+	if !ok {
+		return
+	}
+	result, err := h.service.ExportCredential(c.Request.Context(), id)
+	if err != nil {
+		h.writeServiceError(c, "accountExportFailed", err, http.StatusInternalServerError, "导出账号失败")
+		return
+	}
+	writeCredentialExport(c, "grok2api-account-"+strconv.FormatUint(id, 10)+"-"+time.Now().UTC().Format("20060102T150405Z")+".json", result)
+}
+
+func writeCredentialExport(c *gin.Context, filename string, result accountapp.ExportResult) {
 	c.Header("Cache-Control", "no-store")
 	c.Header("Pragma", "no-cache")
 	c.Header("Content-Disposition", `attachment; filename="`+filename+`"`)

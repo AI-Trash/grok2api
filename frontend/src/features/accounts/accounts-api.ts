@@ -399,6 +399,10 @@ export function exportAccounts(): Promise<Blob> {
   return apiDownload("/api/admin/v1/accounts/export");
 }
 
+export function exportAccount(id: string): Promise<Blob> {
+  return apiDownload(`/api/admin/v1/accounts/${id}/export`);
+}
+
 export function updateAccountsEnabled(ids: string[], enabled: boolean, provider: AccountProvider): Promise<{ updated: number }> {
   return apiRequest("/api/admin/v1/accounts/batch", { method: "PATCH", body: { ids, enabled, provider } }, decodeCountResult<{ updated: number }>("updated"));
 }

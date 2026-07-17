@@ -36,6 +36,7 @@ import {
   deleteAccount,
   deleteAccounts,
   convertWebAccountsToBuild,
+  exportAccount,
   exportAccounts,
   getAccountSummary,
   importAccounts,
@@ -340,6 +341,15 @@ export function AccountsPage() {
     onSuccess: (blob) => {
       downloadAccountExport(blob);
       setExportOpen(false);
+      toast.success(t("accounts.exported"));
+    },
+    onError: showError,
+  });
+
+  const exportOneMutation = useMutation({
+    mutationFn: (id: string) => exportAccount(id),
+    onSuccess: (blob, id) => {
+      downloadAccountExport(blob, `grok2api-account-${id}-${new Date().toISOString().slice(0, 10)}.json`);
       toast.success(t("accounts.exported"));
     },
     onError: showError,
@@ -752,6 +762,7 @@ export function AccountsPage() {
                           {provider === "grok_web" ? <DropdownMenuItem onClick={() => openWebConsoleSync([account.id])}><ArrowRight />{t("webConsoleSync.action")}</DropdownMenuItem> : null}
                           {provider === "grok_build" ? <DropdownMenuItem onClick={() => tokenMutation.mutate(account.id)}><RotateCw />{t("accounts.refreshToken")}</DropdownMenuItem> : null}
                           <DropdownMenuItem onClick={() => provider === "grok_build" ? billingMutation.mutate(account.id) : quotaMutation.mutate(account.id)}><RefreshCw />{provider === "grok_build" ? t("accounts.refreshBilling") : t("accounts.refreshModeQuota")}</DropdownMenuItem>
+                          {provider === "grok_build" ? <DropdownMenuItem onClick={() => exportOneMutation.mutate(account.id)}><Download />{t("accounts.exportOne")}</DropdownMenuItem> : null}
                           <DropdownMenuSeparator />
                           <DropdownMenuItem className="text-destructive focus:text-destructive" onClick={() => setDeleting(account)}><Trash2 />{t("common.delete")}</DropdownMenuItem>
                         </DropdownMenuContent>
@@ -944,11 +955,11 @@ export function AccountsPage() {
   );
 }
 
-function downloadAccountExport(blob: Blob): void {
+function downloadAccountExport(blob: Blob, filename = `grok2api-accounts-${new Date().toISOString().slice(0, 10)}.json`): void {
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = url;
-  anchor.download = `grok2api-accounts-${new Date().toISOString().slice(0, 10)}.json`;
+  anchor.download = filename;
   anchor.click();
   window.setTimeout(() => URL.revokeObjectURL(url), 0);
 }

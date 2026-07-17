@@ -3,6 +3,7 @@ package account
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -92,5 +93,78 @@ func TestExportCredentialsRoundTripsImportFormat(t *testing.T) {
 	}
 	if len(multiProgress) != 3 || multiProgress[0] != [2]int{0, 2} || multiProgress[2] != [2]int{2, 2} {
 		t.Fatalf("multi-file import progress = %#v", multiProgress)
+	}
+}
+
+func TestExportCredentialExportsSingleBuildAccount(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "export-one.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	cipher, err := security.NewCipher(base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	encrypt := func(value string) string {
+		encrypted, encryptErr := cipher.Encrypt(value)
+		if encryptErr != nil {
+			t.Fatal(encryptErr)
+		}
+		return encrypted
+	}
+	repository := relational.NewAccountRepository(database)
+	primary, _, err := repository.UpsertByIdentity(ctx, accountdomain.Credential{
+		Provider: accountdomain.ProviderBuild, Name: "primary", Email: "primary@example.com", UserID: "user-1",
+		SourceKey: "export-one-primary", OIDCClientID: "client-1", EncryptedAccessToken: encrypt("access-1"),
+		EncryptedRefreshToken: encrypt("refresh-1"), ExpiresAt: time.Date(2026, 7, 12, 12, 0, 0, 0, time.UTC),
+		Enabled: true, AuthStatus: accountdomain.AuthStatusActive, Priority: 1, MaxConcurrent: 8,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := repository.UpsertByIdentity(ctx, accountdomain.Credential{
+		Provider: accountdomain.ProviderBuild, Name: "secondary", Email: "secondary@example.com", UserID: "user-2",
+		SourceKey: "export-one-secondary", OIDCClientID: "client-2", EncryptedAccessToken: encrypt("access-2"),
+		EncryptedRefreshToken: encrypt("refresh-2"), ExpiresAt: time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC),
+		Enabled: true, AuthStatus: accountdomain.AuthStatusActive, Priority: 1, MaxConcurrent: 8,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	web, _, err := repository.UpsertByIdentity(ctx, accountdomain.Credential{
+		Provider: accountdomain.ProviderWeb, Name: "web", UserID: "web-1", SourceKey: "export-one-web",
+		EncryptedAccessToken: encrypt("sso-token"), Enabled: true, AuthStatus: accountdomain.AuthStatusActive,
+		Priority: 1, MaxConcurrent: 8,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter := cliprovider.NewAdapter(cliprovider.Config{}, cipher)
+	service := NewService(repository, nil, nil, nil, provider.NewRegistry(adapter), cipher, nil)
+
+	result, err := service.ExportCredential(ctx, primary.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	values, err := adapter.ParseImportedCredentials(result.Data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Count != 1 || len(values) != 1 {
+		t.Fatalf("export count = %d, imported values = %d", result.Count, len(values))
+	}
+	if values[0].Name != "primary" || values[0].AccessToken != "access-1" || values[0].RefreshToken != "refresh-1" {
+		t.Fatalf("exported credential = %#v", values[0])
+	}
+
+	if _, err := service.ExportCredential(ctx, web.ID); !errors.Is(err, ErrUnsupported) {
+		t.Fatalf("web export error = %v", err)
+	}
+	if _, err := service.ExportCredential(ctx, 999999); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("missing export error = %v", err)
 	}
 }
