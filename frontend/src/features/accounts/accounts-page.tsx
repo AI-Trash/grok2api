@@ -62,7 +62,6 @@ import {
   type AccountProvider,
   type AccountUpdateInput,
   type AccountTaskProgressDTO,
-  type BotFlaggedSummaryDTO,
   type BuildConversionInput,
   type BuildConversionStrategy,
   type WebConsoleSyncInput,
@@ -102,9 +101,6 @@ export function AccountsPage() {
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
   const [batchDeleteOpen, setBatchDeleteOpen] = useState(false);
   const [removeBotFlaggedOpen, setRemoveBotFlaggedOpen] = useState(false);
-  const [botFlaggedSummary, setBotFlaggedSummary] = useState<BotFlaggedSummaryDTO | null>(null);
-  const [botFlaggedSummaryLoading, setBotFlaggedSummaryLoading] = useState(false);
-  const [botFlaggedSummaryError, setBotFlaggedSummaryError] = useState<string | null>(null);
   const [exportOpen, setExportOpen] = useState(false);
   const [syncAllOpen, setSyncAllOpen] = useState(false);
   const [quotaSyncProgress, setQuotaSyncProgress] = useState<AccountTaskProgressDTO | null>(null);
@@ -394,39 +390,25 @@ export function AccountsPage() {
     onError: showError,
   });
 
+  const botFlaggedSummaryQuery = useQuery({
+    queryKey: ["accounts", "bot-flagged", "summary"],
+    queryFn: getBotFlaggedSummary,
+    enabled: removeBotFlaggedOpen,
+    staleTime: 0,
+    gcTime: 0,
+  });
+
   const removeBotFlaggedMutation = useMutation({
     mutationFn: deleteBotFlaggedAccounts,
     onSuccess: (result) => {
       setRemoveBotFlaggedOpen(false);
-      setBotFlaggedSummary(null);
-      setBotFlaggedSummaryError(null);
       setSelected(new Set());
       invalidateAccountData();
+      void queryClient.invalidateQueries({ queryKey: ["accounts", "bot-flagged", "summary"] });
       toast.success(t("accounts.botFlaggedRemoved", result));
     },
     onError: showError,
   });
-
-  useEffect(() => {
-    if (!removeBotFlaggedOpen) return;
-    let cancelled = false;
-    setBotFlaggedSummary(null);
-    setBotFlaggedSummaryError(null);
-    setBotFlaggedSummaryLoading(true);
-    void getBotFlaggedSummary()
-      .then((summary) => {
-        if (!cancelled) setBotFlaggedSummary(summary);
-      })
-      .catch((error: unknown) => {
-        if (!cancelled) setBotFlaggedSummaryError(error instanceof Error ? error.message : t("errors.generic"));
-      })
-      .finally(() => {
-        if (!cancelled) setBotFlaggedSummaryLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [removeBotFlaggedOpen, t]);
 
   const batchDeleteMutation = useMutation({
     mutationFn: () => deleteAccounts([...selected], provider),
@@ -1010,15 +992,15 @@ export function AccountsPage() {
         </AlertDialogContent>
       </AlertDialog>
 
-      <AlertDialog open={removeBotFlaggedOpen} onOpenChange={(open) => { if (!open && removeBotFlaggedMutation.isPending) return; setRemoveBotFlaggedOpen(open); if (!open) { setBotFlaggedSummary(null); setBotFlaggedSummaryError(null); } }}>
+      <AlertDialog open={removeBotFlaggedOpen} onOpenChange={(open) => { if (!open && removeBotFlaggedMutation.isPending) return; setRemoveBotFlaggedOpen(open); }}>
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>{t("accounts.removeBotFlaggedTitle")}</AlertDialogTitle>
             <AlertDialogDescription>
-              {botFlaggedSummaryLoading ? t("accounts.removeBotFlaggedLoading")
-                : botFlaggedSummaryError ? botFlaggedSummaryError
-                  : botFlaggedSummary && botFlaggedSummary.marked > 0
-                    ? t("accounts.removeBotFlaggedDescription", botFlaggedSummary)
+              {botFlaggedSummaryQuery.isPending ? t("accounts.removeBotFlaggedLoading")
+                : botFlaggedSummaryQuery.isError ? botFlaggedSummaryQuery.error.message
+                  : botFlaggedSummaryQuery.data && botFlaggedSummaryQuery.data.marked > 0
+                    ? t("accounts.removeBotFlaggedDescription", botFlaggedSummaryQuery.data)
                     : t("accounts.removeBotFlaggedNone")}
             </AlertDialogDescription>
           </AlertDialogHeader>
@@ -1026,7 +1008,7 @@ export function AccountsPage() {
             <AlertDialogCancel disabled={removeBotFlaggedMutation.isPending}>{t("common.cancel")}</AlertDialogCancel>
             <AlertDialogAction
               className="bg-destructive text-white hover:bg-destructive/90"
-              disabled={removeBotFlaggedMutation.isPending || botFlaggedSummaryLoading || Boolean(botFlaggedSummaryError) || !botFlaggedSummary || botFlaggedSummary.marked <= 0}
+              disabled={removeBotFlaggedMutation.isPending || botFlaggedSummaryQuery.isPending || botFlaggedSummaryQuery.isError || !botFlaggedSummaryQuery.data || botFlaggedSummaryQuery.data.marked <= 0}
               onClick={(event) => { event.preventDefault(); removeBotFlaggedMutation.mutate(); }}
             >
               {removeBotFlaggedMutation.isPending ? <Spinner /> : null}
