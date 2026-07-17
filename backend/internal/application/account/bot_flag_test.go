@@ -65,6 +65,14 @@ func TestListAndDeleteBotFlaggedAccounts(t *testing.T) {
 	}
 	service := NewService(repo, audits, nil, stickySessionStub{}, provider.NewRegistry(cliprovider.NewAdapter(cliprovider.Config{}, cipher)), cipher, nil)
 
+	summary, err := service.BotFlaggedSummary(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.Marked != 1 || summary.Total != 2 {
+		t.Fatalf("summary = %#v", summary)
+	}
+
 	marked, total, err := service.List(ctx, 1, 20, "", ListFilter{Provider: string(accountdomain.ProviderBuild), BotFlag: "marked"})
 	if err != nil {
 		t.Fatal(err)
@@ -86,6 +94,13 @@ func TestListAndDeleteBotFlaggedAccounts(t *testing.T) {
 	}
 	if deleted != 1 {
 		t.Fatalf("deleted = %d", deleted)
+	}
+	summary, err = service.BotFlaggedSummary(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.Marked != 0 || summary.Total != 1 {
+		t.Fatalf("summary after delete = %#v", summary)
 	}
 	if _, err := repo.Get(ctx, bot.ID); err != repository.ErrNotFound {
 		t.Fatalf("bot account still exists: %v", err)

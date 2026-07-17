@@ -129,6 +129,7 @@ func (h *Handler) Register(router *gin.RouterGroup) {
 	router.GET("/accounts", h.list)
 	router.GET("/accounts/summary", h.summary)
 	router.GET("/accounts/export", h.exportCredentials)
+	router.GET("/accounts/bot-flagged/summary", h.botFlaggedSummary)
 	router.DELETE("/accounts/bot-flagged", h.deleteBotFlagged)
 	router.GET("/accounts/:id", h.get)
 	router.POST("/accounts/device/start", h.startDevice)
@@ -878,6 +879,15 @@ func (h *Handler) exportCredentials(c *gin.Context) {
 		return
 	}
 	writeCredentialExport(c, "grok2api-accounts-"+time.Now().UTC().Format("20060102T150405Z")+".json", result)
+}
+
+func (h *Handler) botFlaggedSummary(c *gin.Context) {
+	summary, err := h.service.BotFlaggedSummary(c.Request.Context())
+	if err != nil {
+		h.writeServiceError(c, "accountSummaryFailed", err, http.StatusInternalServerError, "统计机器人账号失败")
+		return
+	}
+	response.Success(c, http.StatusOK, gin.H{"marked": summary.Marked, "total": summary.Total})
 }
 
 func (h *Handler) deleteBotFlagged(c *gin.Context) {

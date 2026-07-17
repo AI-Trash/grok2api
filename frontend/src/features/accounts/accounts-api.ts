@@ -417,6 +417,20 @@ export function deleteAccounts(ids: string[], provider: AccountProvider): Promis
   return apiRequest("/api/admin/v1/accounts", { method: "DELETE", body: { ids, provider } }, decodeCountResult<{ deleted: number }>("deleted"));
 }
 
+export type BotFlaggedSummaryDTO = {
+  marked: number;
+  total: number;
+};
+
+const decodeBotFlaggedSummary = createObjectDecoder<BotFlaggedSummaryDTO>("bot flagged summary", {
+  marked: isNumber,
+  total: isNumber,
+});
+
+export function getBotFlaggedSummary(): Promise<BotFlaggedSummaryDTO> {
+  return apiRequest("/api/admin/v1/accounts/bot-flagged/summary", {}, decodeBotFlaggedSummary);
+}
+
 export function deleteBotFlaggedAccounts(): Promise<{ deleted: number }> {
   return apiRequest("/api/admin/v1/accounts/bot-flagged", { method: "DELETE" }, decodeCountResult<{ deleted: number }>("deleted"));
 }

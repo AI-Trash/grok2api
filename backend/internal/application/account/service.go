@@ -414,28 +414,89 @@ func (s *Service) buildAccountViews(ctx context.Context, values []accountdomain.
 	return views, nil
 }
 
-// DeleteBotFlaggedAccounts 删除所有 Grok Build 中 bot_flag_source 为 1 的账号。
-func (s *Service) DeleteBotFlaggedAccounts(ctx context.Context) (int64, error) {
-	values, total, err := s.accounts.List(ctx, repository.AccountListQuery{
-		Page:   repository.PageQuery{Limit: maxCredentialExportAccounts + 1},
-		Filter: repository.AccountListFilter{Provider: string(accountdomain.ProviderBuild), Now: s.now()},
-	})
-	if err != nil {
-		return 0, err
-	}
-	if total > maxCredentialExportAccounts {
-		return 0, fmt.Errorf("%w: 单次最多处理 10000 个账号", ErrExportLimit)
-	}
-	ids := make([]uint64, 0)
-	for _, value := range values {
-		if s.isBotFlagged(value) {
-			ids = append(ids, value.ID)
+// BotFlaggedSummary 统计 Grok Build 账号中机器人标记数量。
+type BotFlaggedSummary struct {
+	Marked int64
+	Total  int64
+}
+
+// BotFlaggedSummary 扫描全部 Grok Build 账号，返回机器人标记数与总数。
+func (s *Service) BotFlaggedSummary(ctx context.Context) (BotFlaggedSummary, error) {
+	var (
+		afterID uint64
+		result  BotFlaggedSummary
+	)
+	for {
+		values, total, err := s.accounts.ListProviderAccountBatch(ctx, accountdomain.ProviderBuild, afterID, accountTaskBatchSize)
+		if err != nil {
+			return BotFlaggedSummary{}, err
+		}
+		if afterID == 0 {
+			result.Total = total
+		}
+		if len(values) == 0 {
+			break
+		}
+		for _, value := range values {
+			if s.isBotFlagged(value) {
+				result.Marked++
+			}
+			afterID = value.ID
+		}
+		if len(values) < accountTaskBatchSize {
+			break
 		}
 	}
-	if len(ids) == 0 {
-		return 0, nil
+	return result, nil
+}
+
+// DeleteBotFlaggedAccounts 删除所有 Grok Build 中 bot_flag_source 为 1 的账号，按 500 一批删除。
+func (s *Service) DeleteBotFlaggedAccounts(ctx context.Context) (int64, error) {
+	const deleteBatchSize = 500
+	var (
+		afterID uint64
+		deleted int64
+		pending = make([]uint64, 0, deleteBatchSize)
+	)
+	flush := func() error {
+		if len(pending) == 0 {
+			return nil
+		}
+		count, err := s.BatchDelete(ctx, pending)
+		if err != nil {
+			return err
+		}
+		deleted += count
+		pending = pending[:0]
+		return nil
 	}
-	return s.BatchDelete(ctx, ids)
+	for {
+		values, _, err := s.accounts.ListProviderAccountBatch(ctx, accountdomain.ProviderBuild, afterID, accountTaskBatchSize)
+		if err != nil {
+			return deleted, err
+		}
+		if len(values) == 0 {
+			break
+		}
+		for _, value := range values {
+			if s.isBotFlagged(value) {
+				pending = append(pending, value.ID)
+				if len(pending) >= deleteBatchSize {
+					if err := flush(); err != nil {
+						return deleted, err
+					}
+				}
+			}
+			afterID = value.ID
+		}
+		if len(values) < accountTaskBatchSize {
+			break
+		}
+	}
+	if err := flush(); err != nil {
+		return deleted, err
+	}
+	return deleted, nil
 }
 
 func oneOf(value string, allowed ...string) bool {
