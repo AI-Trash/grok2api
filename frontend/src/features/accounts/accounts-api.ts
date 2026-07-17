@@ -189,6 +189,7 @@ type ListAccountsInput = {
   type?: string;
   status?: string;
   renewal?: string;
+  botFlag?: string;
   provider: AccountProvider;
   sortBy?: string;
   sortOrder?: SortOrder;
@@ -200,6 +201,7 @@ export function listAccounts(input: ListAccountsInput): Promise<PaginatedDTO<Acc
   if (input.type) query.set("type", input.type);
   if (input.status) query.set("status", input.status);
   if (input.renewal) query.set("renewal", input.renewal);
+  if (input.botFlag) query.set("botFlag", input.botFlag);
   if (input.sortBy && input.sortOrder) {
     query.set("sortBy", input.sortBy);
     query.set("sortOrder", input.sortOrder);
@@ -413,6 +415,10 @@ export function refreshAccountsQuota(ids: string[], provider: AccountProvider): 
 
 export function deleteAccounts(ids: string[], provider: AccountProvider): Promise<{ deleted: number }> {
   return apiRequest("/api/admin/v1/accounts", { method: "DELETE", body: { ids, provider } }, decodeCountResult<{ deleted: number }>("deleted"));
+}
+
+export function deleteBotFlaggedAccounts(): Promise<{ deleted: number }> {
+  return apiRequest("/api/admin/v1/accounts/bot-flagged", { method: "DELETE" }, decodeCountResult<{ deleted: number }>("deleted"));
 }
 
 export function startDeviceAuthorization(): Promise<DeviceSessionDTO> {

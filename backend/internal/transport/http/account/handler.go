@@ -129,6 +129,7 @@ func (h *Handler) Register(router *gin.RouterGroup) {
 	router.GET("/accounts", h.list)
 	router.GET("/accounts/summary", h.summary)
 	router.GET("/accounts/export", h.exportCredentials)
+	router.DELETE("/accounts/bot-flagged", h.deleteBotFlagged)
 	router.GET("/accounts/:id", h.get)
 	router.POST("/accounts/device/start", h.startDevice)
 	router.POST("/accounts/device/:sessionId/poll", h.pollDevice)
@@ -334,7 +335,7 @@ type quotaResponse struct {
 
 func (h *Handler) list(c *gin.Context) {
 	page, pageSize := pagination(c)
-	values, total, err := h.service.List(c.Request.Context(), page, pageSize, c.Query("search"), accountapp.ListFilter{Provider: c.Query("provider"), QuotaType: c.Query("type"), Status: c.Query("status"), Renewal: c.Query("renewal"), Sort: repository.SortQuery{Field: c.Query("sortBy"), Direction: repository.SortDirection(c.Query("sortOrder"))}})
+	values, total, err := h.service.List(c.Request.Context(), page, pageSize, c.Query("search"), accountapp.ListFilter{Provider: c.Query("provider"), QuotaType: c.Query("type"), Status: c.Query("status"), Renewal: c.Query("renewal"), BotFlag: c.Query("botFlag"), Sort: repository.SortQuery{Field: c.Query("sortBy"), Direction: repository.SortDirection(c.Query("sortOrder"))}})
 	if errors.Is(err, accountapp.ErrInvalidFilter) {
 		response.Error(c, http.StatusBadRequest, "invalidFilter", err.Error())
 		return
@@ -877,6 +878,15 @@ func (h *Handler) exportCredentials(c *gin.Context) {
 		return
 	}
 	writeCredentialExport(c, "grok2api-accounts-"+time.Now().UTC().Format("20060102T150405Z")+".json", result)
+}
+
+func (h *Handler) deleteBotFlagged(c *gin.Context) {
+	deleted, err := h.service.DeleteBotFlaggedAccounts(c.Request.Context())
+	if err != nil {
+		h.writeServiceError(c, "accountDeleteFailed", err, http.StatusInternalServerError, "删除机器人账号失败")
+		return
+	}
+	response.Success(c, http.StatusOK, gin.H{"deleted": deleted})
 }
 
 func (h *Handler) exportCredential(c *gin.Context) {

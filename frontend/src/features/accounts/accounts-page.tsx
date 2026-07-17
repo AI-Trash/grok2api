@@ -35,6 +35,7 @@ import { nextTableSort, type SortOrder, type TableSort } from "@/shared/lib/tabl
 import {
   deleteAccount,
   deleteAccounts,
+  deleteBotFlaggedAccounts,
   convertWebAccountsToBuild,
   exportAccount,
   exportAccounts,
@@ -94,9 +95,11 @@ export function AccountsPage() {
   const [typeFilter, setTypeFilter] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
   const [renewalFilter, setRenewalFilter] = useState("");
+  const [botFlagFilter, setBotFlagFilter] = useState("");
   const [sort, setSort] = useState<TableSort>({ field: "createdAt", order: "desc" });
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
   const [batchDeleteOpen, setBatchDeleteOpen] = useState(false);
+  const [removeBotFlaggedOpen, setRemoveBotFlaggedOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
   const [syncAllOpen, setSyncAllOpen] = useState(false);
   const [quotaSyncProgress, setQuotaSyncProgress] = useState<AccountTaskProgressDTO | null>(null);
@@ -147,8 +150,19 @@ export function AccountsPage() {
   const clearCloudflareCookies = useWatch({ control: form.control, name: "clearCloudflareCookies" });
 
   const accountsQuery = useQuery({
-    queryKey: ["accounts", provider, page, pageSize, debouncedSearch, typeFilter, statusFilter, renewalFilter, sort.field, sort.order],
-    queryFn: () => listAccounts({ provider, page, pageSize, search: debouncedSearch, type: typeFilter, status: statusFilter, renewal: provider === "grok_build" ? renewalFilter : undefined, sortBy: sort.field, sortOrder: sort.order }),
+    queryKey: ["accounts", provider, page, pageSize, debouncedSearch, typeFilter, statusFilter, renewalFilter, botFlagFilter, sort.field, sort.order],
+    queryFn: () => listAccounts({
+      provider,
+      page,
+      pageSize,
+      search: debouncedSearch,
+      type: typeFilter,
+      status: statusFilter,
+      renewal: provider === "grok_build" ? renewalFilter : undefined,
+      botFlag: provider === "grok_build" ? botFlagFilter : undefined,
+      sortBy: sort.field,
+      sortOrder: sort.order,
+    }),
   });
 
   const summaryQuery = useQuery({
@@ -375,6 +389,17 @@ export function AccountsPage() {
     onError: showError,
   });
 
+  const removeBotFlaggedMutation = useMutation({
+    mutationFn: deleteBotFlaggedAccounts,
+    onSuccess: (result) => {
+      setRemoveBotFlaggedOpen(false);
+      setSelected(new Set());
+      invalidateAccountData();
+      toast.success(t("accounts.botFlaggedRemoved", result));
+    },
+    onError: showError,
+  });
+
   const batchDeleteMutation = useMutation({
     mutationFn: () => deleteAccounts([...selected], provider),
     onSuccess: () => {
@@ -434,6 +459,7 @@ export function AccountsPage() {
     setTypeFilter("");
     setStatusFilter("");
     setRenewalFilter("");
+    setBotFlagFilter("");
     setQuickImportOpen(false);
     setQuickImportTokens("");
   }
@@ -541,7 +567,8 @@ export function AccountsPage() {
     || importMutation.isPending
     || batchUpdateMutation.isPending
     || batchBillingMutation.isPending
-    || batchDeleteMutation.isPending;
+    || batchDeleteMutation.isPending
+    || removeBotFlaggedMutation.isPending;
 
   return (
     <div className="space-y-5">
@@ -629,6 +656,10 @@ export function AccountsPage() {
                   { value: "refreshable", label: t("accountCredential.autoRefresh") },
                   { value: "unrefreshable", label: t("accountCredential.noAutoRefresh") },
                 ] }] : []),
+                ...(provider === "grok_build" ? [{ id: "botFlag", label: t("accountCredential.botFlag"), value: botFlagFilter, onChange: (value: string) => { setBotFlagFilter(value); setPage(1); }, options: [
+                  { value: "marked", label: t("accountCredential.botFlagMarked") },
+                  { value: "unmarked", label: t("accountCredential.botFlagUnmarked") },
+                ] }] : []),
               ]} />
             </div>
             {selected.size > 0 ? (
@@ -647,6 +678,7 @@ export function AccountsPage() {
                 {provider === "grok_web" && webSummary.total > 0 ? <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => openWebConsoleSync("all")}>{t("webConsoleSync.allAction")}</Button> : null}
                 {hasProviderAccounts ? <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => setSyncAllOpen(true)}>{t("accountCredential.quotaSyncAction")}</Button> : null}
                 {hasProviderAccounts && provider === "grok_build" ? <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => setRenewAllOpen(true)}>{t("accountCredential.refreshAction")}</Button> : null}
+                {hasProviderAccounts && provider === "grok_build" ? <Button variant="ghost" size="sm" className="text-destructive hover:text-destructive" disabled={bulkTaskPending} onClick={() => setRemoveBotFlaggedOpen(true)}>{t("accounts.removeBotFlagged")}</Button> : null}
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild><Button size="sm"><Plus />{t("accounts.connectAccount")}</Button></DropdownMenuTrigger>
                   <DropdownMenuContent align="end">
@@ -947,6 +979,22 @@ export function AccountsPage() {
         <AlertDialogContent>
           <AlertDialogHeader><AlertDialogTitle>{t("accounts.batchDeleteTitle", { count: selected.size })}</AlertDialogTitle><AlertDialogDescription>{t("accounts.deleteDescription")}</AlertDialogDescription></AlertDialogHeader>
           <AlertDialogFooter><AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel><AlertDialogAction className="bg-destructive text-white hover:bg-destructive/90" onClick={() => batchDeleteMutation.mutate()}>{t("common.delete")}</AlertDialogAction></AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={removeBotFlaggedOpen} onOpenChange={setRemoveBotFlaggedOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t("accounts.removeBotFlaggedTitle")}</AlertDialogTitle>
+            <AlertDialogDescription>{t("accounts.removeBotFlaggedDescription")}</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
+            <AlertDialogAction className="bg-destructive text-white hover:bg-destructive/90" disabled={removeBotFlaggedMutation.isPending} onClick={() => removeBotFlaggedMutation.mutate()}>
+              {removeBotFlaggedMutation.isPending ? <Spinner /> : null}
+              {t("accounts.removeBotFlagged")}
+            </AlertDialogAction>
+          </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
     </div>

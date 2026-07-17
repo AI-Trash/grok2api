@@ -54,6 +54,8 @@ const (
 	maxBuildConversionAccounts                = 1000
 	maxWebConsoleSyncAccounts                 = 1000
 	accountTaskBatchSize                      = 1000
+	// botFlagMarkedValue 是 access token JWT bot_flag_source 的已知机器人标记值。
+	botFlagMarkedValue = "1"
 )
 
 const permanentRefreshExpiredReason = "OAuth refresh token 已永久失效且 access token 已过期"
@@ -174,7 +176,9 @@ type ListFilter struct {
 	QuotaType string
 	Status    string
 	Renewal   string
-	Sort      repository.SortQuery
+	// BotFlag 仅对 Grok Build 有效：marked=机器人标记为 1，unmarked=未标记。
+	BotFlag string
+	Sort    repository.SortQuery
 }
 
 type Summary struct {
@@ -304,7 +308,10 @@ func (s *Service) ProviderDefinition(value accountdomain.Provider) (provider.Def
 
 func (s *Service) List(ctx context.Context, page, pageSize int, search string, filter ListFilter) ([]View, int64, error) {
 	page, pageSize = normalizePage(page, pageSize)
-	if (filter.Provider != "" && !accountdomain.Provider(filter.Provider).IsValid()) || !oneOf(filter.QuotaType, "", "free", "paid", "unknown", "auto", "basic", "super", "heavy") || !oneOf(filter.Status, "", "active", "disabled", "reauthRequired", "cooldown", "waitingReset", "probing") || !oneOf(filter.Renewal, "", "refreshable", "unrefreshable") || !repository.IsValidSort(filter.Sort, "name", "type", "status", "createdAt") {
+	if (filter.Provider != "" && !accountdomain.Provider(filter.Provider).IsValid()) || !oneOf(filter.QuotaType, "", "free", "paid", "unknown", "auto", "basic", "super", "heavy") || !oneOf(filter.Status, "", "active", "disabled", "reauthRequired", "cooldown", "waitingReset", "probing") || !oneOf(filter.Renewal, "", "refreshable", "unrefreshable") || !oneOf(filter.BotFlag, "", "marked", "unmarked") || !repository.IsValidSort(filter.Sort, "name", "type", "status", "createdAt") {
+		return nil, 0, ErrInvalidFilter
+	}
+	if filter.BotFlag != "" && filter.Provider != "" && filter.Provider != string(accountdomain.ProviderBuild) {
 		return nil, 0, ErrInvalidFilter
 	}
 	var refreshable *bool
@@ -312,32 +319,83 @@ func (s *Service) List(ctx context.Context, page, pageSize int, search string, f
 		value := filter.Renewal == "refreshable"
 		refreshable = &value
 	}
+	listFilter := repository.AccountListFilter{Provider: filter.Provider, QuotaType: filter.QuotaType, Status: filter.Status, Refreshable: refreshable, Now: time.Now().UTC()}
+	if filter.BotFlag != "" && listFilter.Provider == "" {
+		listFilter.Provider = string(accountdomain.ProviderBuild)
+	}
+	var (
+		values []accountdomain.Credential
+		total  int64
+		err    error
+	)
+	if filter.BotFlag != "" {
+		values, total, err = s.listCredentialsByBotFlag(ctx, search, listFilter, filter.Sort, filter.BotFlag, page, pageSize)
+	} else {
+		values, total, err = s.accounts.List(ctx, repository.AccountListQuery{
+			Page:   repository.PageQuery{Offset: (page - 1) * pageSize, Limit: pageSize, Search: search, Sort: filter.Sort},
+			Filter: listFilter,
+		})
+	}
+	if err != nil {
+		return nil, 0, err
+	}
+	views, err := s.buildAccountViews(ctx, values)
+	if err != nil {
+		return nil, 0, err
+	}
+	return views, total, nil
+}
+
+func (s *Service) listCredentialsByBotFlag(ctx context.Context, search string, filter repository.AccountListFilter, sort repository.SortQuery, botFlag string, page, pageSize int) ([]accountdomain.Credential, int64, error) {
 	values, total, err := s.accounts.List(ctx, repository.AccountListQuery{
-		Page:   repository.PageQuery{Offset: (page - 1) * pageSize, Limit: pageSize, Search: search, Sort: filter.Sort},
-		Filter: repository.AccountListFilter{Provider: filter.Provider, QuotaType: filter.QuotaType, Status: filter.Status, Refreshable: refreshable, Now: time.Now().UTC()},
+		Page:   repository.PageQuery{Offset: 0, Limit: maxCredentialExportAccounts + 1, Search: search, Sort: sort},
+		Filter: filter,
 	})
 	if err != nil {
 		return nil, 0, err
 	}
+	if total > maxCredentialExportAccounts {
+		return nil, 0, fmt.Errorf("%w: 机器人标记筛选单次最多处理 10000 个账号", ErrInvalidFilter)
+	}
+	wantMarked := botFlag == "marked"
+	filtered := make([]accountdomain.Credential, 0, len(values))
+	for _, value := range values {
+		if s.isBotFlagged(value) == wantMarked {
+			filtered = append(filtered, value)
+		}
+	}
+	totalFiltered := int64(len(filtered))
+	start := (page - 1) * pageSize
+	if start >= len(filtered) {
+		return []accountdomain.Credential{}, totalFiltered, nil
+	}
+	end := start + pageSize
+	if end > len(filtered) {
+		end = len(filtered)
+	}
+	return filtered[start:end], totalFiltered, nil
+}
+
+func (s *Service) buildAccountViews(ctx context.Context, values []accountdomain.Credential) ([]View, error) {
 	accountIDs := make([]uint64, 0, len(values))
 	for _, value := range values {
 		accountIDs = append(accountIDs, value.ID)
 	}
 	observedTokens, err := s.audits.SumTokensByAccountsSince(ctx, accountIDs, time.Now().UTC().Add(-freeUsageWindow))
 	if err != nil {
-		return nil, 0, err
+		return nil, err
 	}
 	billings, err := s.accounts.GetBillings(ctx, accountIDs)
 	if err != nil {
-		return nil, 0, err
+		return nil, err
 	}
 	recoveries, err := s.accounts.GetQuotaRecoveries(ctx, accountIDs)
 	if err != nil {
-		return nil, 0, err
+		return nil, err
 	}
 	quotaWindows, err := s.accounts.GetQuotaWindows(ctx, accountIDs)
 	if err != nil {
-		return nil, 0, err
+		return nil, err
 	}
 	views := make([]View, 0, len(values))
 	for _, value := range values {
@@ -353,7 +411,31 @@ func (s *Service) List(ctx context.Context, page, pageSize int, search string, f
 		view.QuotaWindows = quotaWindows[value.ID]
 		views = append(views, s.withAccessTokenClaims(view))
 	}
-	return views, total, nil
+	return views, nil
+}
+
+// DeleteBotFlaggedAccounts 删除所有 Grok Build 中 bot_flag_source 为 1 的账号。
+func (s *Service) DeleteBotFlaggedAccounts(ctx context.Context) (int64, error) {
+	values, total, err := s.accounts.List(ctx, repository.AccountListQuery{
+		Page:   repository.PageQuery{Limit: maxCredentialExportAccounts + 1},
+		Filter: repository.AccountListFilter{Provider: string(accountdomain.ProviderBuild), Now: s.now()},
+	})
+	if err != nil {
+		return 0, err
+	}
+	if total > maxCredentialExportAccounts {
+		return 0, fmt.Errorf("%w: 单次最多处理 10000 个账号", ErrExportLimit)
+	}
+	ids := make([]uint64, 0)
+	for _, value := range values {
+		if s.isBotFlagged(value) {
+			ids = append(ids, value.ID)
+		}
+	}
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	return s.BatchDelete(ctx, ids)
 }
 
 func oneOf(value string, allowed ...string) bool {
@@ -451,6 +533,11 @@ func (s *Service) withAccessTokenClaims(view View) View {
 	}
 	view.BotFlag = &value
 	return view
+}
+
+func (s *Service) isBotFlagged(credential accountdomain.Credential) bool {
+	view := s.withAccessTokenClaims(View{Credential: credential})
+	return view.BotFlag != nil && *view.BotFlag == botFlagMarkedValue
 }
 
 func (s *Service) ObserveResponseModel(ctx context.Context, id uint64, model string) error {
