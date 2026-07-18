@@ -73,14 +73,14 @@ func TestListAndDeleteBotFlaggedAccounts(t *testing.T) {
 		t.Fatalf("summary = %#v", summary)
 	}
 
-	marked, total, err := service.List(ctx, 1, 20, "", ListFilter{Provider: string(accountdomain.ProviderBuild), BotFlag: "marked"})
+	marked, total, err := service.List(ctx, 1, 20, "", ListFilter{Provider: string(accountdomain.ProviderBuild), Risk: "flagged"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if total != 1 || len(marked) != 1 || marked[0].Credential.ID != bot.ID || marked[0].BotFlag == nil || *marked[0].BotFlag != "1" {
+	if total != 1 || len(marked) != 1 || marked[0].Credential.ID != bot.ID || !marked[0].BuildBotFlagged {
 		t.Fatalf("marked list = total=%d items=%#v", total, marked)
 	}
-	unmarked, total, err := service.List(ctx, 1, 20, "", ListFilter{Provider: string(accountdomain.ProviderBuild), BotFlag: "unmarked"})
+	unmarked, total, err := service.List(ctx, 1, 20, "", ListFilter{Provider: string(accountdomain.ProviderBuild), Risk: "normal"})
 	if err != nil {
 		t.Fatal(err)
 	}
