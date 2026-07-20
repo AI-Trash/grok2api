@@ -134,6 +134,8 @@ const (
 	CleanupStatusCooldown       CleanupStatus = "cooldown"
 	CleanupStatusDisabled       CleanupStatus = "disabled"
 	CleanupStatusReauthRequired CleanupStatus = "reauthRequired"
+	// CleanupStatusBotFlagged 仅对 Grok Build 有效：删除上游风控标记（JWT bot_flag_source）账号。
+	CleanupStatusBotFlagged CleanupStatus = "botFlagged"
 )
 
 type DeviceStartResult struct {
@@ -411,13 +413,13 @@ func (s *Service) List(ctx context.Context, page, pageSize int, search string, f
 	return views, total, nil
 }
 
-// BotFlaggedSummary 统计 Grok Build 账号中机器人标记数量。
+// BotFlaggedSummary 表示 Grok Build 上游风控标记账号数量。
 type BotFlaggedSummary struct {
 	Marked int64
 	Total  int64
 }
 
-// BotFlaggedSummary 扫描全部 Grok Build 账号，返回机器人标记数与总数。
+// BotFlaggedSummary 扫描全部 Grok Build 账号，返回上游风控标记数与总数。
 func (s *Service) BotFlaggedSummary(ctx context.Context) (BotFlaggedSummary, error) {
 	var (
 		afterID uint64
@@ -447,7 +449,7 @@ func (s *Service) BotFlaggedSummary(ctx context.Context) (BotFlaggedSummary, err
 	return result, nil
 }
 
-// DeleteBotFlaggedAccounts 删除所有 Grok Build 中 bot_flag_source 为 1 的账号，按 500 一批删除。
+// DeleteBotFlaggedAccounts 删除所有 Grok Build 中上游风控标记（bot_flag_source）账号，按 500 一批删除。
 func (s *Service) DeleteBotFlaggedAccounts(ctx context.Context) (int64, error) {
 	const deleteBatchSize = 500
 	var (
@@ -602,7 +604,8 @@ func (s *Service) AccountsBelongToProvider(ctx context.Context, ids []uint64, pr
 	return count == int64(len(values)), nil
 }
 
-// CleanupAccounts 按管理端状态清理指定 Provider 账号；正常、待重置和检测中的账号不在清理范围内。
+// CleanupAccounts 按管理端状态清理指定 Provider 账号；正常、待重置和检测中的账号不在状态清理范围内。
+// botFlagged 仅 Grok Build 可用，可与其它状态一并选择。
 func (s *Service) CleanupAccounts(ctx context.Context, providerValue accountdomain.Provider, statuses []CleanupStatus) (int64, error) {
 	if !providerValue.IsValid() {
 		return 0, invalidInput("账号来源无效")
@@ -611,6 +614,11 @@ func (s *Service) CleanupAccounts(ctx context.Context, providerValue accountdoma
 	for _, status := range statuses {
 		switch status {
 		case CleanupStatusCooldown, CleanupStatusDisabled, CleanupStatusReauthRequired:
+			selected[status] = struct{}{}
+		case CleanupStatusBotFlagged:
+			if providerValue != accountdomain.ProviderBuild {
+				return 0, invalidInput("风控账号清理仅支持 Grok Build")
+			}
 			selected[status] = struct{}{}
 		default:
 			return 0, invalidInput("账号清理状态无效")
@@ -643,6 +651,14 @@ func (s *Service) CleanupAccounts(ctx context.Context, providerValue accountdoma
 				break
 			}
 		}
+	}
+	if _, ok := selected[CleanupStatusBotFlagged]; ok {
+		// DeleteBotFlaggedAccounts 会自行处理 sticky / refresh 状态与 bot flag 缓存。
+		count, err := s.DeleteBotFlaggedAccounts(ctx)
+		if err != nil {
+			return deleted, err
+		}
+		deleted += count
 	}
 	if deleted > 0 {
 		s.invalidateBuildBotFlagCache()

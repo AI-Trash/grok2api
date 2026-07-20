@@ -5,7 +5,7 @@ import type { SortOrder } from "@/shared/lib/table-sort";
 
 export type AccountProvider = "grok_build" | "grok_web" | "grok_console";
 export type BuildRouteMode = "auto" | "build" | "xai";
-export type AccountCleanupStatus = "cooldown" | "disabled" | "reauthRequired";
+export type AccountCleanupStatus = "cooldown" | "disabled" | "reauthRequired" | "botFlagged";
 
 export type BillingDTO = {
   planCode?: string;

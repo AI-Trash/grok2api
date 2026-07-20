@@ -88,3 +88,10 @@ func TestCleanupAccountsRequiresStatus(t *testing.T) {
 		t.Fatal("empty cleanup status unexpectedly succeeded")
 	}
 }
+
+func TestCleanupAccountsRejectsBotFlaggedForNonBuild(t *testing.T) {
+	service := NewService(nil, nil, nil, nil, nil, nil, nil)
+	if _, err := service.CleanupAccounts(context.Background(), accountdomain.ProviderWeb, []CleanupStatus{CleanupStatusBotFlagged}); err == nil {
+		t.Fatal("bot flagged cleanup for non-build unexpectedly succeeded")
+	}
+}

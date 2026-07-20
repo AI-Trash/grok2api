@@ -964,7 +964,7 @@ func (h *Handler) exportCredentials(c *gin.Context) {
 func (h *Handler) botFlaggedSummary(c *gin.Context) {
 	summary, err := h.service.BotFlaggedSummary(c.Request.Context())
 	if err != nil {
-		h.writeServiceError(c, "accountSummaryFailed", err, http.StatusInternalServerError, "统计机器人账号失败")
+		h.writeServiceError(c, "accountSummaryFailed", err, http.StatusInternalServerError, "统计风控账号失败")
 		return
 	}
 	response.Success(c, http.StatusOK, gin.H{"marked": summary.Marked, "total": summary.Total})
@@ -973,7 +973,7 @@ func (h *Handler) botFlaggedSummary(c *gin.Context) {
 func (h *Handler) deleteBotFlagged(c *gin.Context) {
 	deleted, err := h.service.DeleteBotFlaggedAccounts(c.Request.Context())
 	if err != nil {
-		h.writeServiceError(c, "accountDeleteFailed", err, http.StatusInternalServerError, "删除机器人账号失败")
+		h.writeServiceError(c, "accountDeleteFailed", err, http.StatusInternalServerError, "删除风控账号失败")
 		return
 	}
 	response.Success(c, http.StatusOK, gin.H{"deleted": deleted})

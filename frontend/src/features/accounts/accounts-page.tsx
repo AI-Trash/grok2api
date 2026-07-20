@@ -38,7 +38,6 @@ import {
   cleanupAccounts,
   deleteAccount,
   deleteAccounts,
-  deleteBotFlaggedAccounts,
   enableWebAccountNSFW,
   convertWebAccountsToBuild,
   exportAccount,
@@ -123,7 +122,6 @@ export function AccountsPage() {
   const [sort, setSort] = useState<TableSort>({ field: "createdAt", order: "desc" });
   const [selection, setSelection] = useState<AccountSelection>(() => ({ provider: "grok_build", ids: new Set() }));
   const [batchDeleteOpen, setBatchDeleteOpen] = useState(false);
-  const [removeBotFlaggedOpen, setRemoveBotFlaggedOpen] = useState(false);
   const [cleanupOpen, setCleanupOpen] = useState(false);
   const [cleanupStatuses, setCleanupStatuses] = useState<Set<AccountCleanupStatus>>(() => new Set());
   const [exportOpen, setExportOpen] = useState(false);
@@ -474,21 +472,9 @@ export function AccountsPage() {
   const botFlaggedSummaryQuery = useQuery({
     queryKey: ["accounts", "bot-flagged", "summary"],
     queryFn: getBotFlaggedSummary,
-    enabled: removeBotFlaggedOpen,
+    enabled: cleanupOpen && provider === "grok_build",
     staleTime: 0,
     gcTime: 0,
-  });
-
-  const removeBotFlaggedMutation = useMutation({
-    mutationFn: deleteBotFlaggedAccounts,
-    onSuccess: (result) => {
-      setRemoveBotFlaggedOpen(false);
-      clearSelection();
-      invalidateAccountData();
-      void queryClient.invalidateQueries({ queryKey: ["accounts", "bot-flagged", "summary"] });
-      toast.success(t("accounts.botFlaggedRemoved", result));
-    },
-    onError: showError,
   });
 
   const batchDeleteMutation = useMutation({
@@ -508,6 +494,7 @@ export function AccountsPage() {
       setCleanupOpen(false);
       setCleanupStatuses(new Set());
       invalidateAccountData();
+      void queryClient.invalidateQueries({ queryKey: ["accounts", "bot-flagged", "summary"] });
       toast.success(t("accounts.cleanupCompleted", result));
     },
     onError: showError,
@@ -718,7 +705,6 @@ export function AccountsPage() {
     || batchBillingMutation.isPending
     || batchTokenMutation.isPending
     || batchDeleteMutation.isPending
-    || removeBotFlaggedMutation.isPending
     || cleanupMutation.isPending
     || webConfirmationMutation.isPending
     || webAccountScriptsMutation.isPending;
@@ -880,7 +866,6 @@ export function AccountsPage() {
                 {provider === "grok_web" && hasProviderAccounts ? <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => setWebAccountScriptsTargets("all")}>{t("webAccountScripts.action")}</Button> : null}
                 {hasProviderAccounts ? <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => setSyncAllOpen(true)}>{t("accountCredential.quotaSyncAction")}</Button> : null}
                 {hasProviderAccounts && provider === "grok_build" ? <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => setRenewAllOpen(true)}>{t("accountCredential.refreshAction")}</Button> : null}
-                {hasProviderAccounts && provider === "grok_build" ? <Button variant="ghost" size="sm" className="text-destructive hover:text-destructive" disabled={bulkTaskPending} onClick={() => setRemoveBotFlaggedOpen(true)}>{t("accounts.removeBotFlagged")}</Button> : null}
                 {hasProviderAccounts ? <Button variant="secondary" size="sm" className="bg-destructive/10 text-destructive hover:bg-destructive/15 hover:text-destructive" disabled={bulkTaskPending} onClick={() => { setCleanupStatuses(new Set()); setCleanupOpen(true); }}><Trash2 />{t("accounts.cleanupAction")}</Button> : null}
               </div>
             )}
@@ -1205,32 +1190,6 @@ export function AccountsPage() {
         </AlertDialogContent>
       </AlertDialog>
 
-      <AlertDialog open={removeBotFlaggedOpen} onOpenChange={(open) => { if (!open && removeBotFlaggedMutation.isPending) return; setRemoveBotFlaggedOpen(open); }}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>{t("accounts.removeBotFlaggedTitle")}</AlertDialogTitle>
-            <AlertDialogDescription>
-              {botFlaggedSummaryQuery.isPending ? t("accounts.removeBotFlaggedLoading")
-                : botFlaggedSummaryQuery.isError ? botFlaggedSummaryQuery.error.message
-                  : botFlaggedSummaryQuery.data && botFlaggedSummaryQuery.data.marked > 0
-                    ? t("accounts.removeBotFlaggedDescription", botFlaggedSummaryQuery.data)
-                    : t("accounts.removeBotFlaggedNone")}
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel disabled={removeBotFlaggedMutation.isPending}>{t("common.cancel")}</AlertDialogCancel>
-            <AlertDialogAction
-              className="bg-destructive text-white hover:bg-destructive/90"
-              disabled={removeBotFlaggedMutation.isPending || botFlaggedSummaryQuery.isPending || botFlaggedSummaryQuery.isError || !botFlaggedSummaryQuery.data || botFlaggedSummaryQuery.data.marked <= 0}
-              onClick={(event) => { event.preventDefault(); removeBotFlaggedMutation.mutate(); }}
-            >
-              {removeBotFlaggedMutation.isPending ? <Spinner /> : null}
-              {t("accounts.removeBotFlagged")}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-
       <Dialog open={cleanupOpen} onOpenChange={(open) => { if (!cleanupMutation.isPending) { setCleanupOpen(open); if (!open) setCleanupStatuses(new Set()); } }}>
         <DialogContent className="max-w-[420px]">
           <DialogHeader>
@@ -1256,6 +1215,31 @@ export function AccountsPage() {
                 <span>{label}</span>
               </label>
             ))}
+            {provider === "grok_build" ? (
+              <label className="flex cursor-pointer items-center gap-3 rounded-md bg-muted/40 px-3 py-2.5 text-xs">
+                <Checkbox
+                  checked={cleanupStatuses.has("botFlagged")}
+                  disabled={cleanupMutation.isPending}
+                  onCheckedChange={(checked) => setCleanupStatuses((current) => {
+                    const next = new Set(current);
+                    if (checked === true) next.add("botFlagged"); else next.delete("botFlagged");
+                    return next;
+                  })}
+                />
+                <span className="min-w-0 flex-1">
+                  <span>{t("accounts.cleanupBotFlagged")}</span>
+                  <span className="mt-0.5 block text-[11px] text-muted-foreground">
+                    {botFlaggedSummaryQuery.isPending
+                      ? t("accounts.removeBotFlaggedLoading")
+                      : botFlaggedSummaryQuery.isError
+                        ? botFlaggedSummaryQuery.error.message
+                        : botFlaggedSummaryQuery.data && botFlaggedSummaryQuery.data.marked > 0
+                          ? t("accounts.cleanupBotFlaggedCount", botFlaggedSummaryQuery.data)
+                          : t("accounts.removeBotFlaggedNone")}
+                  </span>
+                </span>
+              </label>
+            ) : null}
           </div>
           <DialogFooter>
             <Button type="button" variant="secondary" size="sm" disabled={cleanupMutation.isPending} onClick={() => setCleanupOpen(false)}>{t("common.cancel")}</Button>
