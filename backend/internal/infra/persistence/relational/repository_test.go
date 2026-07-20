@@ -310,6 +310,82 @@ func TestAccountRepositorySummarizesOperationalStates(t *testing.T) {
 	}
 }
 
+func TestAccountRepositorySummarizesQuotaUsage(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC()
+	repo := NewAccountRepository(openTestDatabase(t))
+	create := func(provider account.Provider, name string) account.Credential {
+		value, _, err := repo.UpsertByIdentity(ctx, account.Credential{
+			Provider: provider, Name: name, SourceKey: name, EncryptedAccessToken: testEncryptedToken, AuthStatus: account.AuthStatusActive, Enabled: true,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return value
+	}
+
+	buildPaid := create(account.ProviderBuild, "build-paid")
+	if err := repo.SaveBilling(ctx, account.Billing{AccountID: buildPaid.ID, MonthlyLimit: 100, Used: 40, SyncedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	buildPercent := create(account.ProviderBuild, "build-percent")
+	if err := repo.SaveBilling(ctx, account.Billing{AccountID: buildPercent.ID, CreditUsagePercent: 25, UsagePeriodType: "USAGE_PERIOD_TYPE_WEEKLY", SyncedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	buildDisabled := create(account.ProviderBuild, "build-disabled")
+	if err := repo.SaveBilling(ctx, account.Billing{AccountID: buildDisabled.ID, MonthlyLimit: 50, Used: 50, SyncedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	buildDisabled.Enabled = false
+	if _, err := repo.Update(ctx, buildDisabled); err != nil {
+		t.Fatal(err)
+	}
+
+	webWeekly := create(account.ProviderWeb, "web-weekly")
+	if err := repo.SaveQuotaWindows(ctx, webWeekly.ID, account.WebTierSuper, now, []account.QuotaWindow{
+		{AccountID: webWeekly.ID, Mode: "weekly", Remaining: 0, Total: 0, UsagePercent: 60, UpdatedAt: now},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	webModes := create(account.ProviderWeb, "web-modes")
+	if err := repo.SaveQuotaWindows(ctx, webModes.ID, account.WebTierBasic, now, []account.QuotaWindow{
+		{AccountID: webModes.ID, Mode: "fast", Remaining: 10, Total: 40, UpdatedAt: now},
+		{AccountID: webModes.ID, Mode: "auto", Remaining: 5, Total: 20, UpdatedAt: now},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	console := create(account.ProviderConsole, "console")
+	if err := repo.SaveQuotaWindows(ctx, console.ID, account.WebTierAuto, now, []account.QuotaWindow{
+		{AccountID: console.ID, Mode: "console", Remaining: 25, Total: 100, UpdatedAt: now},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	rows, err := repo.SummarizeQuotaUsage(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byProvider := make(map[string]repository.ProviderQuotaUsage, len(rows))
+	for _, row := range rows {
+		byProvider[row.Provider] = row
+	}
+
+	build := byProvider[string(account.ProviderBuild)]
+	// enabled: 40/100 + 25/100 => 65/200 = 32.5%; disabled account excluded
+	if build.Accounts != 2 || build.Used != 65 || build.Limit != 200 || build.UsagePercent != 32.5 {
+		t.Fatalf("build quota usage = %#v", build)
+	}
+	web := byProvider[string(account.ProviderWeb)]
+	// weekly 60/100 + modes (30+15)/(40+20)=45/60 => 105/160
+	if web.Accounts != 2 || web.Used != 105 || web.Limit != 160 {
+		t.Fatalf("web quota usage = %#v", web)
+	}
+	consoleUsage := byProvider[string(account.ProviderConsole)]
+	if consoleUsage.Accounts != 1 || consoleUsage.Used != 75 || consoleUsage.Limit != 100 || consoleUsage.UsagePercent != 75 {
+		t.Fatalf("console quota usage = %#v", consoleUsage)
+	}
+}
+
 func TestAccountIdentityPrefersStableOAuthIdentity(t *testing.T) {
 	first := accountIdentity(account.Credential{Provider: account.ProviderBuild, UserID: "user-1", TeamID: "team-1", SourceKey: "device:old-token"})
 	second := accountIdentity(account.Credential{Provider: account.ProviderBuild, UserID: "user-1", TeamID: "team-1", SourceKey: "device:new-token"})

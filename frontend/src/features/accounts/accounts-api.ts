@@ -123,13 +123,22 @@ export type AccountUpdateInput = {
   buildRouteMode?: BuildRouteMode;
 };
 
+export type ProviderSummaryDTO = {
+  total: number;
+  available: number;
+  quotaUsed: number;
+  quotaLimit: number;
+  usagePercent: number;
+  quotaKnown: boolean;
+};
+
 export type AccountSummaryDTO = {
   total: number;
   available: number;
   recovering: number;
   attention: number;
   risk: number;
-  providers: Record<AccountProvider, { total: number; available: number }>;
+  providers: Record<AccountProvider, ProviderSummaryDTO>;
   recovery: { cooldown: number; waitingReset: number; probing: number };
   issues: { disabled: number; reauthRequired: number };
 };
@@ -190,7 +199,9 @@ const decodeAccount = createValidatedDecoder<AccountDTO>("account", accountValid
 const decodeAccountPage = createPaginatedDecoder<AccountDTO>(accountValidator);
 const decodeAccountSummary = createObjectDecoder<AccountSummaryDTO>("account summary", {
   total: isNumber, available: isNumber, recovering: isNumber, attention: isNumber, risk: isNumber,
-  providers: isRecordOf(hasShape({ total: isNumber, available: isNumber })),
+  providers: isRecordOf(hasShape({
+    total: isNumber, available: isNumber, quotaUsed: isNumber, quotaLimit: isNumber, usagePercent: isNumber, quotaKnown: isBoolean,
+  })),
   recovery: hasShape({ cooldown: isNumber, waitingReset: isNumber, probing: isNumber }),
   issues: hasShape({ disabled: isNumber, reauthRequired: isNumber }),
 });

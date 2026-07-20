@@ -164,6 +164,135 @@ func (r *AccountRepository) Summarize(ctx context.Context, now time.Time) ([]rep
 	return rows, err
 }
 
+// SummarizeQuotaUsage 汇总各渠道已启用账号的池级额度使用率。
+// Build 优先 Billing（月额度 / on-demand / 周百分比），否则用 Free recovery 确认额度；
+// Web/Console 优先 weekly 窗口的 usage_percent，否则按各 mode 的 total/remaining 累加。
+func (r *AccountRepository) SummarizeQuotaUsage(ctx context.Context) ([]repository.ProviderQuotaUsage, error) {
+	type accountContribution struct {
+		Provider string
+		Used     float64
+		Limit    float64
+	}
+	contributions := make([]accountContribution, 0)
+
+	var buildRows []struct {
+		Provider string
+		Used     float64
+		Limit    float64
+	}
+	buildSQL := `
+SELECT account.provider AS provider,
+	CASE
+		WHEN billing.monthly_limit > 0 THEN billing.used
+		WHEN billing.on_demand_cap > 0 THEN CASE
+			WHEN billing.on_demand_used > 0 THEN billing.on_demand_used
+			ELSE billing.on_demand_cap * billing.credit_usage_percent / 100.0
+		END
+		WHEN TRIM(COALESCE(billing.usage_period_type, '')) <> '' THEN billing.credit_usage_percent
+		WHEN recovery.confirmed_limit > 0 THEN CAST(recovery.confirmed_used AS REAL)
+		ELSE 0
+	END AS used,
+	CASE
+		WHEN billing.monthly_limit > 0 THEN billing.monthly_limit
+		WHEN billing.on_demand_cap > 0 THEN billing.on_demand_cap
+		WHEN TRIM(COALESCE(billing.usage_period_type, '')) <> '' THEN 100
+		WHEN recovery.confirmed_limit > 0 THEN CAST(recovery.confirmed_limit AS REAL)
+		ELSE 0
+	END AS "limit"
+FROM provider_accounts AS account
+LEFT JOIN account_billing_snapshots AS billing ON billing.account_id = account.id
+LEFT JOIN account_quota_recovery AS recovery ON recovery.account_id = account.id AND (recovery.kind = 'free' OR recovery.kind = '')
+WHERE account.provider = ? AND account.enabled = ?`
+	if err := r.db.db.WithContext(ctx).Raw(buildSQL, account.ProviderBuild, true).Scan(&buildRows).Error; err != nil {
+		return nil, err
+	}
+	for _, row := range buildRows {
+		if row.Limit <= 0 {
+			continue
+		}
+		contributions = append(contributions, accountContribution{Provider: row.Provider, Used: row.Used, Limit: row.Limit})
+	}
+
+	var windowRows []struct {
+		Provider string
+		Used     float64
+		Limit    float64
+	}
+	// 每个账号只贡献一次：有 weekly 用周额度百分比；否则累加非 weekly 窗口的请求额度。
+	windowSQL := `
+SELECT account.provider AS provider,
+	CASE
+		WHEN weekly.account_id IS NOT NULL THEN CASE
+			WHEN weekly.total > 0 THEN CAST(weekly.total - weekly.remaining AS REAL)
+			ELSE weekly.usage_percent
+		END
+		ELSE COALESCE(modes.used, 0)
+	END AS used,
+	CASE
+		WHEN weekly.account_id IS NOT NULL THEN CASE
+			WHEN weekly.total > 0 THEN CAST(weekly.total AS REAL)
+			ELSE 100
+		END
+		ELSE COALESCE(modes.total, 0)
+	END AS "limit"
+FROM provider_accounts AS account
+LEFT JOIN account_quota_windows AS weekly
+	ON weekly.account_id = account.id AND weekly.mode = 'weekly'
+LEFT JOIN (
+	SELECT account_id,
+		SUM(CASE WHEN total > 0 THEN CAST(total - remaining AS REAL) ELSE 0 END) AS used,
+		SUM(CASE WHEN total > 0 THEN CAST(total AS REAL) ELSE 0 END) AS total
+	FROM account_quota_windows
+	WHERE mode <> 'weekly'
+	GROUP BY account_id
+) AS modes ON modes.account_id = account.id
+WHERE account.provider IN (?, ?) AND account.enabled = ?
+	AND (weekly.account_id IS NOT NULL OR COALESCE(modes.total, 0) > 0)`
+	if err := r.db.db.WithContext(ctx).Raw(windowSQL, account.ProviderWeb, account.ProviderConsole, true).Scan(&windowRows).Error; err != nil {
+		return nil, err
+	}
+	for _, row := range windowRows {
+		if row.Limit <= 0 {
+			continue
+		}
+		contributions = append(contributions, accountContribution{Provider: row.Provider, Used: row.Used, Limit: row.Limit})
+	}
+
+	byProvider := make(map[string]*repository.ProviderQuotaUsage, len(account.Providers()))
+	for _, providerValue := range account.Providers() {
+		byProvider[string(providerValue)] = &repository.ProviderQuotaUsage{Provider: string(providerValue)}
+	}
+	for _, item := range contributions {
+		usage := byProvider[item.Provider]
+		if usage == nil {
+			usage = &repository.ProviderQuotaUsage{Provider: item.Provider}
+			byProvider[item.Provider] = usage
+		}
+		used := item.Used
+		if used < 0 {
+			used = 0
+		}
+		if used > item.Limit {
+			used = item.Limit
+		}
+		usage.Used += used
+		usage.Limit += item.Limit
+		usage.Accounts++
+	}
+	result := make([]repository.ProviderQuotaUsage, 0, len(byProvider))
+	for _, providerValue := range account.Providers() {
+		usage := byProvider[string(providerValue)]
+		if usage.Limit > 0 {
+			usage.UsagePercent = usage.Used / usage.Limit * 100
+			if usage.UsagePercent > 100 {
+				usage.UsagePercent = 100
+			}
+		}
+		result = append(result, *usage)
+	}
+	return result, nil
+}
+
 // ListRoutingCandidates 批量加载账号、额度、恢复状态和目标模型能力，避免推理热路径按账号逐条查询。
 func (r *AccountRepository) ListRoutingCandidates(ctx context.Context, provider account.Provider, upstreamModel, quotaMode string) ([]account.RoutingCandidate, error) {
 	values, err := r.ListEnabled(ctx, provider)

@@ -94,6 +94,16 @@ type AccountSummary struct {
 	ReauthRequired int64
 }
 
+// ProviderQuotaUsage 表示单个上游渠道在已同步额度账号上的池级用量。
+// Used/Limit 使用同渠道内可比较的额度单位（credits、请求次数或百分比单位），UsagePercent = Used/Limit*100。
+type ProviderQuotaUsage struct {
+	Provider     string
+	Used         float64
+	Limit        float64
+	UsagePercent float64
+	Accounts     int64
+}
+
 type ModelListFilter struct {
 	Provider string
 	Enabled  *bool

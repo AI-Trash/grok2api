@@ -205,8 +205,12 @@ type Summary struct {
 }
 
 type ProviderSummary struct {
-	Total     int64
-	Available int64
+	Total        int64
+	Available    int64
+	QuotaUsed    float64
+	QuotaLimit   float64
+	UsagePercent float64
+	QuotaKnown   bool
 }
 
 type RecoverySummary struct {
@@ -238,6 +242,18 @@ func (s *Service) Summary(ctx context.Context) (Summary, error) {
 		result.Issues.Disabled += row.Disabled
 		result.Issues.ReauthRequired += row.ReauthRequired
 		result.Providers[row.Provider] = ProviderSummary{Total: row.Total, Available: row.Available}
+	}
+	quotaRows, err := s.accounts.SummarizeQuotaUsage(ctx)
+	if err != nil {
+		return Summary{}, err
+	}
+	for _, row := range quotaRows {
+		current := result.Providers[row.Provider]
+		current.QuotaUsed = row.Used
+		current.QuotaLimit = row.Limit
+		current.UsagePercent = row.UsagePercent
+		current.QuotaKnown = row.Limit > 0
+		result.Providers[row.Provider] = current
 	}
 	result.Recovering = result.Recovery.Cooldown + result.Recovery.WaitingReset + result.Recovery.Probing
 	result.Attention = result.Issues.Disabled + result.Issues.ReauthRequired

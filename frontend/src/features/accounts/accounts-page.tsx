@@ -701,9 +701,10 @@ export function AccountsPage() {
   const invalidAccounts = summary?.issues.reauthRequired ?? 0;
   const riskAccounts = summary?.risk ?? 0;
   const abnormalAccounts = recoveringAccounts + disabledAccounts + invalidAccounts;
-  const buildSummary = summary?.providers.grok_build ?? { total: 0, available: 0 };
-  const webSummary = summary?.providers.grok_web ?? { total: 0, available: 0 };
-  const consoleSummary = summary?.providers.grok_console ?? { total: 0, available: 0 };
+  const emptyProviderSummary = { total: 0, available: 0, quotaUsed: 0, quotaLimit: 0, usagePercent: 0, quotaKnown: false };
+  const buildSummary = summary?.providers.grok_build ?? emptyProviderSummary;
+  const webSummary = summary?.providers.grok_web ?? emptyProviderSummary;
+  const consoleSummary = summary?.providers.grok_console ?? emptyProviderSummary;
   const summaryLoading = summaryQuery.isPending;
   const summaryUnavailable = summaryQuery.isError;
   const providerAccountTotal = provider === "grok_build" ? buildSummary.total : provider === "grok_web" ? webSummary.total : consoleSummary.total;
@@ -722,6 +723,13 @@ export function AccountsPage() {
     || webConfirmationMutation.isPending
     || webAccountScriptsMutation.isPending;
 
+  function providerQuotaDetail(providerSummary: typeof emptyProviderSummary): string {
+    const routable = t("accounts.routableAccountCount", { count: formatNumber(providerSummary.available, i18n.language, 0) });
+    if (summaryUnavailable) return routable;
+    if (!providerSummary.quotaKnown) return `${routable} · ${t("accounts.quotaUsageUnknown")}`;
+    return `${routable} · ${t("accounts.quotaUsagePercent", { percent: formatNumber(providerSummary.usagePercent, i18n.language, 1) })}`;
+  }
+
   return (
     <div className="space-y-5">
       <header className="flex min-h-8 items-center">
@@ -729,9 +737,33 @@ export function AccountsPage() {
         <p className="sr-only">{t("console.accountsDescription")}</p>
       </header>
       <section className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
-        <AccountMetricPanel tone="text-quota-product-1" icon={<SquareTerminal />} loading={summaryLoading} label={t("accounts.buildAccountCount")} value={summaryUnavailable ? "-" : formatNumber(buildSummary.total, i18n.language, 0)} detail={t("accounts.routableAccountCount", { count: formatNumber(buildSummary.available, i18n.language, 0) })} />
-        <AccountMetricPanel tone="text-quota-product-2" icon={<Compass />} loading={summaryLoading} label={t("accounts.webAccountCount")} value={summaryUnavailable ? "-" : formatNumber(webSummary.total, i18n.language, 0)} detail={t("accounts.routableAccountCount", { count: formatNumber(webSummary.available, i18n.language, 0) })} />
-        <AccountMetricPanel tone="text-quota-product-4" icon={<Webhook />} loading={summaryLoading} label={t("accounts.consoleAccountCount")} value={summaryUnavailable ? "-" : formatNumber(consoleSummary.total, i18n.language, 0)} detail={t("accounts.routableAccountCount", { count: formatNumber(consoleSummary.available, i18n.language, 0) })} />
+        <AccountMetricPanel
+          tone="text-quota-product-1"
+          icon={<SquareTerminal />}
+          loading={summaryLoading}
+          label={t("accounts.buildAccountCount")}
+          value={summaryUnavailable ? "-" : formatNumber(buildSummary.total, i18n.language, 0)}
+          detail={providerQuotaDetail(buildSummary)}
+          usagePercent={summaryUnavailable || !buildSummary.quotaKnown ? undefined : buildSummary.usagePercent}
+        />
+        <AccountMetricPanel
+          tone="text-quota-product-2"
+          icon={<Compass />}
+          loading={summaryLoading}
+          label={t("accounts.webAccountCount")}
+          value={summaryUnavailable ? "-" : formatNumber(webSummary.total, i18n.language, 0)}
+          detail={providerQuotaDetail(webSummary)}
+          usagePercent={summaryUnavailable || !webSummary.quotaKnown ? undefined : webSummary.usagePercent}
+        />
+        <AccountMetricPanel
+          tone="text-quota-product-4"
+          icon={<Webhook />}
+          loading={summaryLoading}
+          label={t("accounts.consoleAccountCount")}
+          value={summaryUnavailable ? "-" : formatNumber(consoleSummary.total, i18n.language, 0)}
+          detail={providerQuotaDetail(consoleSummary)}
+          usagePercent={summaryUnavailable || !consoleSummary.quotaKnown ? undefined : consoleSummary.usagePercent}
+        />
         <AccountMetricPanel
           tone={abnormalAccounts > 0 ? "text-amber-600 dark:text-amber-400" : "text-muted-foreground"}
           icon={<TriangleAlert />}
@@ -1246,7 +1278,19 @@ function downloadAccountExport(blob: Blob, name: AccountProvider | string): void
   window.setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
-function AccountMetricPanel({ icon, label, value, detail, loading, tone }: { icon: ReactNode; label: string; value: string; detail: string; loading: boolean; tone: string }) {
+function AccountMetricPanel({
+  icon, label, value, detail, loading, tone, usagePercent,
+}: {
+  icon: ReactNode;
+  label: string;
+  value: string;
+  detail: string;
+  loading: boolean;
+  tone: string;
+  usagePercent?: number;
+}) {
+  const showQuota = usagePercent !== undefined && !loading;
+  const percent = showQuota ? Math.max(0, Math.min(100, usagePercent)) : 0;
   return (
     <div className="min-h-28 rounded-lg bg-card p-4" aria-busy={loading}>
       <div className="flex min-h-5 items-center justify-between gap-3">
@@ -1255,6 +1299,11 @@ function AccountMetricPanel({ icon, label, value, detail, loading, tone }: { ico
       </div>
       <div className="mt-3 flex min-h-8 items-center text-2xl font-medium tracking-tight tabular-nums">{loading ? <Spinner /> : value}</div>
       <p className={cn("mt-1.5 min-h-4 truncate text-[11px] text-muted-foreground", loading && "invisible")} title={detail}>{detail}</p>
+      {showQuota ? (
+        <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-muted" aria-hidden>
+          <div className="h-full bg-primary transition-[width] duration-300" style={{ width: `${percent}%` }} />
+        </div>
+      ) : null}
     </div>
   );
 }
