@@ -313,23 +313,44 @@ func TestAccountRepositorySummarizesOperationalStates(t *testing.T) {
 func TestAccountRepositorySummarizesQuotaUsage(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now().UTC()
-	repo := NewAccountRepository(openTestDatabase(t))
-	create := func(provider account.Provider, name string) account.Credential {
-		value, _, err := repo.UpsertByIdentity(ctx, account.Credential{
+	database := openTestDatabase(t)
+	repo := NewAccountRepository(database)
+	create := func(provider account.Provider, name string, opts ...func(*account.Credential)) account.Credential {
+		value := account.Credential{
 			Provider: provider, Name: name, SourceKey: name, EncryptedAccessToken: testEncryptedToken, AuthStatus: account.AuthStatusActive, Enabled: true,
-		})
+		}
+		for _, opt := range opts {
+			opt(&value)
+		}
+		created, _, err := repo.UpsertByIdentity(ctx, value)
 		if err != nil {
 			t.Fatal(err)
 		}
-		return value
+		return created
 	}
 
 	buildPaid := create(account.ProviderBuild, "build-paid")
 	if err := repo.SaveBilling(ctx, account.Billing{AccountID: buildPaid.ID, MonthlyLimit: 100, Used: 40, SyncedAt: now}); err != nil {
 		t.Fatal(err)
 	}
+	// Super weekly percent：仅 paid 计划可走 credit_usage_percent。
 	buildPercent := create(account.ProviderBuild, "build-percent")
-	if err := repo.SaveBilling(ctx, account.Billing{AccountID: buildPercent.ID, CreditUsagePercent: 25, UsagePeriodType: "USAGE_PERIOD_TYPE_WEEKLY", SyncedAt: now}); err != nil {
+	if err := repo.SaveBilling(ctx, account.Billing{AccountID: buildPercent.ID, PlanName: "SuperGrok", CreditUsagePercent: 25, UsagePeriodType: "USAGE_PERIOD_TYPE_WEEKLY", SyncedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	// Free 账号即使 credit_usage_percent=99 也不能按 99% 计入；应按近 24h token / 1e6。
+	buildFree := create(account.ProviderBuild, "build-free", func(value *account.Credential) {
+		value.ObservedModel = "grok-4.5-build-free"
+	})
+	if err := repo.SaveBilling(ctx, account.Billing{
+		AccountID: buildFree.ID, PlanName: "Free", CreditUsagePercent: 99, UsagePeriodType: "USAGE_PERIOD_TYPE_WEEKLY", SyncedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.db.WithContext(ctx).Create(&requestAuditModel{
+		RequestID: "free-tokens", ClientKeyID: 1, ModelRouteID: 1, AccountID: &buildFree.ID, Provider: "grok_build",
+		Operation: "responses", UsageSource: "upstream", StatusCode: 200, TotalTokens: 250_000, CreatedAt: now.Add(-time.Hour),
+	}).Error; err != nil {
 		t.Fatal(err)
 	}
 	buildDisabled := create(account.ProviderBuild, "build-disabled")
@@ -371,13 +392,13 @@ func TestAccountRepositorySummarizesQuotaUsage(t *testing.T) {
 	}
 
 	build := byProvider[string(account.ProviderBuild)]
-	// enabled: 40/100 + 25/100 => 65/200 = 32.5%; disabled account excluded
-	if build.Accounts != 2 || build.Used != 65 || build.Limit != 200 || build.UsagePercent != 32.5 {
+	// 各账号先归一到百分比：paid 40% + super weekly 25% + free 25% => 90/300 = 30%
+	if build.Accounts != 3 || build.Used != 90 || build.Limit != 300 || build.UsagePercent != 30 {
 		t.Fatalf("build quota usage = %#v", build)
 	}
 	web := byProvider[string(account.ProviderWeb)]
-	// weekly 60/100 + modes (30+15)/(40+20)=45/60 => 105/160
-	if web.Accounts != 2 || web.Used != 105 || web.Limit != 160 {
+	// weekly 60% + modes 45/60=75% => 135/200 = 67.5%
+	if web.Accounts != 2 || web.Used != 135 || web.Limit != 200 || web.UsagePercent != 67.5 {
 		t.Fatalf("web quota usage = %#v", web)
 	}
 	consoleUsage := byProvider[string(account.ProviderConsole)]

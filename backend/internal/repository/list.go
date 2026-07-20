@@ -95,7 +95,7 @@ type AccountSummary struct {
 }
 
 // ProviderQuotaUsage 表示单个上游渠道在已同步额度账号上的池级用量。
-// Used/Limit 使用同渠道内可比较的额度单位（credits、请求次数或百分比单位），UsagePercent = Used/Limit*100。
+// Used/Limit 已按账号归一到百分比单位（每个有效账号 Limit 贡献 100），UsagePercent = Used/Limit*100。
 type ProviderQuotaUsage struct {
 	Provider     string
 	Used         float64

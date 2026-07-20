@@ -164,8 +164,15 @@ func (r *AccountRepository) Summarize(ctx context.Context, now time.Time) ([]rep
 	return rows, err
 }
 
+// buildFreeEstimatedTokenLimit 与 application/account.estimatedFreeTokenLimit 保持一致：
+// Free 账号列表展示的是近 24h 观测 token / 该估算上限，不是 Billing.credit_usage_percent。
+const buildFreeEstimatedTokenLimit = 1_000_000
+
 // SummarizeQuotaUsage 汇总各渠道已启用账号的池级额度使用率。
-// Build 优先 Billing（月额度 / on-demand / 周百分比），否则用 Free recovery 确认额度；
+// Build 与 newQuotaView 对齐：
+//   - Super/paid：Billing 月额度 / on-demand / 周百分比（credit_usage_percent 仅在此路径）
+//   - Free recovery：confirmed_used / confirmed_limit
+//   - Free 活跃估算：近 24h 审计 token / 1e6（不得把 Free 的 credit_usage_percent 当额度）
 // Web/Console 优先 weekly 窗口的 usage_percent，否则按各 mode 的 total/remaining 累加。
 func (r *AccountRepository) SummarizeQuotaUsage(ctx context.Context) ([]repository.ProviderQuotaUsage, error) {
 	type accountContribution struct {
@@ -180,34 +187,55 @@ func (r *AccountRepository) SummarizeQuotaUsage(ctx context.Context) ([]reposito
 		Used     float64
 		Limit    float64
 	}
+	// paid 判定与 domain.Billing.IsPaid / accountPaidBillingSignals 一致；
+	// credit_usage_percent 在 Free 账号上也会出现，绝不能单独作为额度来源。
+	// 每个账号先归一成 0–100 的使用率再汇总，避免 Free token 与 Paid credits 量纲混加。
+	buildPaid := accountPaidBillingSignals
+	buildFree := `(LOWER(TRIM(account.observed_model)) LIKE '%-build-free' OR ` + accountFreePlanSignal + `)`
 	buildSQL := `
 SELECT account.provider AS provider,
 	CASE
-		WHEN billing.monthly_limit > 0 THEN billing.used
-		WHEN billing.on_demand_cap > 0 THEN CASE
-			WHEN billing.on_demand_used > 0 THEN billing.on_demand_used
-			ELSE billing.on_demand_cap * billing.credit_usage_percent / 100.0
+		WHEN ` + buildPaid + ` AND billing.monthly_limit > 0 THEN billing.used / billing.monthly_limit * 100.0
+		WHEN ` + buildPaid + ` AND billing.on_demand_cap > 0 THEN CASE
+			WHEN billing.on_demand_used > 0 THEN billing.on_demand_used / billing.on_demand_cap * 100.0
+			ELSE billing.credit_usage_percent
 		END
-		WHEN TRIM(COALESCE(billing.usage_period_type, '')) <> '' THEN billing.credit_usage_percent
-		WHEN recovery.confirmed_limit > 0 THEN CAST(recovery.confirmed_used AS REAL)
-		ELSE 0
+		WHEN ` + buildPaid + ` AND TRIM(COALESCE(billing.usage_period_type, '')) <> '' THEN billing.credit_usage_percent
+		WHEN account.build_super_entitled = TRUE THEN -1
+		WHEN recovery.confirmed_limit > 0 AND recovery.status IN ('exhausted', 'probing') THEN CASE
+			WHEN recovery.confirmed_used > 0 THEN CAST(recovery.confirmed_used AS REAL) / CAST(recovery.confirmed_limit AS REAL) * 100.0
+			ELSE COALESCE(tokens.total_tokens, 0) / CAST(recovery.confirmed_limit AS REAL) * 100.0
+		END
+		WHEN ` + buildFree + ` THEN COALESCE(tokens.total_tokens, 0) / ? * 100.0
+		ELSE -1
 	END AS used,
 	CASE
-		WHEN billing.monthly_limit > 0 THEN billing.monthly_limit
-		WHEN billing.on_demand_cap > 0 THEN billing.on_demand_cap
-		WHEN TRIM(COALESCE(billing.usage_period_type, '')) <> '' THEN 100
-		WHEN recovery.confirmed_limit > 0 THEN CAST(recovery.confirmed_limit AS REAL)
+		WHEN ` + buildPaid + ` AND (
+			billing.monthly_limit > 0
+			OR billing.on_demand_cap > 0
+			OR TRIM(COALESCE(billing.usage_period_type, '')) <> ''
+		) THEN 100
+		WHEN account.build_super_entitled = TRUE THEN 0
+		WHEN recovery.confirmed_limit > 0 AND recovery.status IN ('exhausted', 'probing') THEN 100
+		WHEN ` + buildFree + ` THEN 100
 		ELSE 0
 	END AS "limit"
 FROM provider_accounts AS account
 LEFT JOIN account_billing_snapshots AS billing ON billing.account_id = account.id
-LEFT JOIN account_quota_recovery AS recovery ON recovery.account_id = account.id AND (recovery.kind = 'free' OR recovery.kind = '')
+LEFT JOIN account_quota_recovery AS recovery ON recovery.account_id = account.id AND (recovery.kind = 'free' OR recovery.kind = '' OR recovery.kind IS NULL)
+LEFT JOIN (
+	SELECT account_id, COALESCE(SUM(total_tokens), 0) AS total_tokens
+	FROM request_audits
+	WHERE account_id IS NOT NULL AND created_at >= ? AND total_tokens > 0
+	GROUP BY account_id
+) AS tokens ON tokens.account_id = account.id
 WHERE account.provider = ? AND account.enabled = ?`
-	if err := r.db.db.WithContext(ctx).Raw(buildSQL, account.ProviderBuild, true).Scan(&buildRows).Error; err != nil {
+	freeSince := time.Now().UTC().Add(-24 * time.Hour)
+	if err := r.db.db.WithContext(ctx).Raw(buildSQL, float64(buildFreeEstimatedTokenLimit), freeSince, account.ProviderBuild, true).Scan(&buildRows).Error; err != nil {
 		return nil, err
 	}
 	for _, row := range buildRows {
-		if row.Limit <= 0 {
+		if row.Limit <= 0 || row.Used < 0 {
 			continue
 		}
 		contributions = append(contributions, accountContribution{Provider: row.Provider, Used: row.Used, Limit: row.Limit})
@@ -218,22 +246,21 @@ WHERE account.provider = ? AND account.enabled = ?`
 		Used     float64
 		Limit    float64
 	}
-	// 每个账号只贡献一次：有 weekly 用周额度百分比；否则累加非 weekly 窗口的请求额度。
+	// 每个账号只贡献一次，并归一到 0–100%：有 weekly 用周额度百分比；否则按 mode 请求额度占比。
 	windowSQL := `
 SELECT account.provider AS provider,
 	CASE
 		WHEN weekly.account_id IS NOT NULL THEN CASE
-			WHEN weekly.total > 0 THEN CAST(weekly.total - weekly.remaining AS REAL)
+			WHEN weekly.total > 0 THEN CAST(weekly.total - weekly.remaining AS REAL) / CAST(weekly.total AS REAL) * 100.0
 			ELSE weekly.usage_percent
 		END
-		ELSE COALESCE(modes.used, 0)
+		WHEN COALESCE(modes.total, 0) > 0 THEN modes.used / modes.total * 100.0
+		ELSE -1
 	END AS used,
 	CASE
-		WHEN weekly.account_id IS NOT NULL THEN CASE
-			WHEN weekly.total > 0 THEN CAST(weekly.total AS REAL)
-			ELSE 100
-		END
-		ELSE COALESCE(modes.total, 0)
+		WHEN weekly.account_id IS NOT NULL THEN 100
+		WHEN COALESCE(modes.total, 0) > 0 THEN 100
+		ELSE 0
 	END AS "limit"
 FROM provider_accounts AS account
 LEFT JOIN account_quota_windows AS weekly
@@ -252,7 +279,7 @@ WHERE account.provider IN (?, ?) AND account.enabled = ?
 		return nil, err
 	}
 	for _, row := range windowRows {
-		if row.Limit <= 0 {
+		if row.Limit <= 0 || row.Used < 0 {
 			continue
 		}
 		contributions = append(contributions, accountContribution{Provider: row.Provider, Used: row.Used, Limit: row.Limit})
