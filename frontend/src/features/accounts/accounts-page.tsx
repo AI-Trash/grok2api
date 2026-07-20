@@ -76,6 +76,7 @@ import {
   type WebAccountScriptActions,
   type WebAccountScriptsInput,
   type DeviceSessionDTO,
+  type ProviderSummaryDTO,
   type QuotaDTO,
 } from "@/features/accounts/accounts-api";
 import { AccountQuota, ConsoleQuota, WebQuota } from "@/features/accounts/account-quota";
@@ -688,7 +689,7 @@ export function AccountsPage() {
   const invalidAccounts = summary?.issues.reauthRequired ?? 0;
   const riskAccounts = summary?.risk ?? 0;
   const abnormalAccounts = recoveringAccounts + disabledAccounts + invalidAccounts;
-  const emptyProviderSummary = { total: 0, available: 0, quotaUsed: 0, quotaLimit: 0, usagePercent: 0, quotaKnown: false, quotaUnit: "" as const };
+  const emptyProviderSummary: ProviderSummaryDTO = { total: 0, available: 0, quotaUsed: 0, quotaLimit: 0, usagePercent: 0, quotaKnown: false, quotaUnit: "" };
   const buildSummary = summary?.providers.grok_build ?? emptyProviderSummary;
   const webSummary = summary?.providers.grok_web ?? emptyProviderSummary;
   const consoleSummary = summary?.providers.grok_console ?? emptyProviderSummary;
@@ -709,7 +710,7 @@ export function AccountsPage() {
     || webConfirmationMutation.isPending
     || webAccountScriptsMutation.isPending;
 
-  function providerQuotaDetail(providerSummary: typeof emptyProviderSummary): { text: string; quotaTooltip?: string } {
+  function providerQuotaDetail(providerSummary: ProviderSummaryDTO): { text: string; quotaTooltip?: string } {
     const routable = t("accounts.routableAccountCount", { count: formatNumber(providerSummary.available, i18n.language, 0) });
     if (summaryUnavailable) return { text: routable };
     if (!providerSummary.quotaKnown) return { text: `${routable} · ${t("accounts.quotaUsageUnknown")}` };
