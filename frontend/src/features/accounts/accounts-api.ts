@@ -123,6 +123,8 @@ export type AccountUpdateInput = {
   buildRouteMode?: BuildRouteMode;
 };
 
+export type ProviderQuotaUnit = "tokens" | "credits" | "percent" | "requests" | "mixed" | "";
+
 export type ProviderSummaryDTO = {
   total: number;
   available: number;
@@ -130,6 +132,7 @@ export type ProviderSummaryDTO = {
   quotaLimit: number;
   usagePercent: number;
   quotaKnown: boolean;
+  quotaUnit: ProviderQuotaUnit;
 };
 
 export type AccountSummaryDTO = {
@@ -201,6 +204,7 @@ const decodeAccountSummary = createObjectDecoder<AccountSummaryDTO>("account sum
   total: isNumber, available: isNumber, recovering: isNumber, attention: isNumber, risk: isNumber,
   providers: isRecordOf(hasShape({
     total: isNumber, available: isNumber, quotaUsed: isNumber, quotaLimit: isNumber, usagePercent: isNumber, quotaKnown: isBoolean,
+    quotaUnit: isOneOf("tokens", "credits", "percent", "requests", "mixed", ""),
   })),
   recovery: hasShape({ cooldown: isNumber, waitingReset: isNumber, probing: isNumber }),
   issues: hasShape({ disabled: isNumber, reauthRequired: isNumber }),

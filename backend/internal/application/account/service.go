@@ -213,6 +213,8 @@ type ProviderSummary struct {
 	QuotaLimit   float64
 	UsagePercent float64
 	QuotaKnown   bool
+	// QuotaUnit 为 tokens、credits、percent、requests 或 mixed；mixed 时 Used/Limit 不展示。
+	QuotaUnit string
 }
 
 type RecoverySummary struct {
@@ -254,7 +256,8 @@ func (s *Service) Summary(ctx context.Context) (Summary, error) {
 		current.QuotaUsed = row.Used
 		current.QuotaLimit = row.Limit
 		current.UsagePercent = row.UsagePercent
-		current.QuotaKnown = row.Limit > 0
+		current.QuotaKnown = row.Accounts > 0
+		current.QuotaUnit = row.Unit
 		result.Providers[row.Provider] = current
 	}
 	result.Recovering = result.Recovery.Cooldown + result.Recovery.WaitingReset + result.Recovery.Probing

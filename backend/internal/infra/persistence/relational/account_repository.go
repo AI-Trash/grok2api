@@ -174,22 +174,26 @@ const buildFreeEstimatedTokenLimit = 1_000_000
 //   - Free recovery：confirmed_used / confirmed_limit
 //   - Free 活跃估算：近 24h 审计 token / 1e6（不得把 Free 的 credit_usage_percent 当额度）
 // Web/Console 优先 weekly 窗口的 usage_percent，否则按各 mode 的 total/remaining 累加。
+// UsagePercent 按账号等权平均；Used/Limit 在 Unit 一致时累加原生量纲，供 UI tooltip 展示。
 func (r *AccountRepository) SummarizeQuotaUsage(ctx context.Context) ([]repository.ProviderQuotaUsage, error) {
 	type accountContribution struct {
-		Provider string
-		Used     float64
-		Limit    float64
+		Provider      string
+		PercentUsed   float64
+		AbsoluteUsed  float64
+		AbsoluteLimit float64
+		Unit          string
 	}
 	contributions := make([]accountContribution, 0)
 
 	var buildRows []struct {
-		Provider string
-		Used     float64
-		Limit    float64
+		Provider      string
+		PercentUsed   float64
+		AbsoluteUsed  float64
+		AbsoluteLimit float64
+		Unit          string
 	}
 	// paid 判定与 domain.Billing.IsPaid / accountPaidBillingSignals 一致；
 	// credit_usage_percent 在 Free 账号上也会出现，绝不能单独作为额度来源。
-	// 每个账号先归一成 0–100 的使用率再汇总，避免 Free token 与 Paid credits 量纲混加。
 	buildPaid := accountPaidBillingSignals
 	buildFree := `(LOWER(TRIM(account.observed_model)) LIKE '%-build-free' OR ` + accountFreePlanSignal + `)`
 	buildSQL := `
@@ -208,18 +212,40 @@ SELECT account.provider AS provider,
 		END
 		WHEN ` + buildFree + ` THEN COALESCE(tokens.total_tokens, 0) / ? * 100.0
 		ELSE -1
-	END AS used,
+	END AS percent_used,
 	CASE
-		WHEN ` + buildPaid + ` AND (
-			billing.monthly_limit > 0
-			OR billing.on_demand_cap > 0
-			OR TRIM(COALESCE(billing.usage_period_type, '')) <> ''
-		) THEN 100
+		WHEN ` + buildPaid + ` AND billing.monthly_limit > 0 THEN billing.used
+		WHEN ` + buildPaid + ` AND billing.on_demand_cap > 0 THEN CASE
+			WHEN billing.on_demand_used > 0 THEN billing.on_demand_used
+			ELSE billing.on_demand_cap * billing.credit_usage_percent / 100.0
+		END
+		WHEN ` + buildPaid + ` AND TRIM(COALESCE(billing.usage_period_type, '')) <> '' THEN billing.credit_usage_percent
 		WHEN account.build_super_entitled = TRUE THEN 0
-		WHEN recovery.confirmed_limit > 0 AND recovery.status IN ('exhausted', 'probing') THEN 100
-		WHEN ` + buildFree + ` THEN 100
+		WHEN recovery.confirmed_limit > 0 AND recovery.status IN ('exhausted', 'probing') THEN CASE
+			WHEN recovery.confirmed_used > 0 THEN CAST(recovery.confirmed_used AS REAL)
+			ELSE COALESCE(tokens.total_tokens, 0)
+		END
+		WHEN ` + buildFree + ` THEN COALESCE(tokens.total_tokens, 0)
 		ELSE 0
-	END AS "limit"
+	END AS absolute_used,
+	CASE
+		WHEN ` + buildPaid + ` AND billing.monthly_limit > 0 THEN billing.monthly_limit
+		WHEN ` + buildPaid + ` AND billing.on_demand_cap > 0 THEN billing.on_demand_cap
+		WHEN ` + buildPaid + ` AND TRIM(COALESCE(billing.usage_period_type, '')) <> '' THEN 100
+		WHEN account.build_super_entitled = TRUE THEN 0
+		WHEN recovery.confirmed_limit > 0 AND recovery.status IN ('exhausted', 'probing') THEN CAST(recovery.confirmed_limit AS REAL)
+		WHEN ` + buildFree + ` THEN ?
+		ELSE 0
+	END AS absolute_limit,
+	CASE
+		WHEN ` + buildPaid + ` AND billing.monthly_limit > 0 THEN 'credits'
+		WHEN ` + buildPaid + ` AND billing.on_demand_cap > 0 THEN 'credits'
+		WHEN ` + buildPaid + ` AND TRIM(COALESCE(billing.usage_period_type, '')) <> '' THEN 'percent'
+		WHEN account.build_super_entitled = TRUE THEN ''
+		WHEN recovery.confirmed_limit > 0 AND recovery.status IN ('exhausted', 'probing') THEN 'tokens'
+		WHEN ` + buildFree + ` THEN 'tokens'
+		ELSE ''
+	END AS unit
 FROM provider_accounts AS account
 LEFT JOIN account_billing_snapshots AS billing ON billing.account_id = account.id
 LEFT JOIN account_quota_recovery AS recovery ON recovery.account_id = account.id AND (recovery.kind = 'free' OR recovery.kind = '' OR recovery.kind IS NULL)
@@ -231,22 +257,34 @@ LEFT JOIN (
 ) AS tokens ON tokens.account_id = account.id
 WHERE account.provider = ? AND account.enabled = ?`
 	freeSince := time.Now().UTC().Add(-24 * time.Hour)
-	if err := r.db.db.WithContext(ctx).Raw(buildSQL, float64(buildFreeEstimatedTokenLimit), freeSince, account.ProviderBuild, true).Scan(&buildRows).Error; err != nil {
+	if err := r.db.db.WithContext(ctx).Raw(
+		buildSQL,
+		float64(buildFreeEstimatedTokenLimit),
+		float64(buildFreeEstimatedTokenLimit),
+		freeSince,
+		account.ProviderBuild,
+		true,
+	).Scan(&buildRows).Error; err != nil {
 		return nil, err
 	}
 	for _, row := range buildRows {
-		if row.Limit <= 0 || row.Used < 0 {
+		if row.AbsoluteLimit <= 0 || row.PercentUsed < 0 || row.Unit == "" {
 			continue
 		}
-		contributions = append(contributions, accountContribution{Provider: row.Provider, Used: row.Used, Limit: row.Limit})
+		contributions = append(contributions, accountContribution{
+			Provider: row.Provider, PercentUsed: row.PercentUsed,
+			AbsoluteUsed: row.AbsoluteUsed, AbsoluteLimit: row.AbsoluteLimit, Unit: row.Unit,
+		})
 	}
 
 	var windowRows []struct {
-		Provider string
-		Used     float64
-		Limit    float64
+		Provider      string
+		PercentUsed   float64
+		AbsoluteUsed  float64
+		AbsoluteLimit float64
+		Unit          string
 	}
-	// 每个账号只贡献一次，并归一到 0–100%：有 weekly 用周额度百分比；否则按 mode 请求额度占比。
+	// 每个账号只贡献一次：有 weekly 用周额度百分比；否则按 mode 请求额度。
 	windowSQL := `
 SELECT account.provider AS provider,
 	CASE
@@ -256,12 +294,29 @@ SELECT account.provider AS provider,
 		END
 		WHEN COALESCE(modes.total, 0) > 0 THEN modes.used / modes.total * 100.0
 		ELSE -1
-	END AS used,
+	END AS percent_used,
 	CASE
-		WHEN weekly.account_id IS NOT NULL THEN 100
-		WHEN COALESCE(modes.total, 0) > 0 THEN 100
+		WHEN weekly.account_id IS NOT NULL THEN CASE
+			WHEN weekly.total > 0 THEN CAST(weekly.total - weekly.remaining AS REAL)
+			ELSE weekly.usage_percent
+		END
+		WHEN COALESCE(modes.total, 0) > 0 THEN modes.used
 		ELSE 0
-	END AS "limit"
+	END AS absolute_used,
+	CASE
+		WHEN weekly.account_id IS NOT NULL THEN CASE
+			WHEN weekly.total > 0 THEN CAST(weekly.total AS REAL)
+			ELSE 100
+		END
+		WHEN COALESCE(modes.total, 0) > 0 THEN modes.total
+		ELSE 0
+	END AS absolute_limit,
+	CASE
+		WHEN weekly.account_id IS NOT NULL AND weekly.total > 0 THEN 'requests'
+		WHEN weekly.account_id IS NOT NULL THEN 'percent'
+		WHEN COALESCE(modes.total, 0) > 0 THEN 'requests'
+		ELSE ''
+	END AS unit
 FROM provider_accounts AS account
 LEFT JOIN account_quota_windows AS weekly
 	ON weekly.account_id = account.id AND weekly.mode = 'weekly'
@@ -279,43 +334,79 @@ WHERE account.provider IN (?, ?) AND account.enabled = ?
 		return nil, err
 	}
 	for _, row := range windowRows {
-		if row.Limit <= 0 || row.Used < 0 {
+		if row.AbsoluteLimit <= 0 || row.PercentUsed < 0 || row.Unit == "" {
 			continue
 		}
-		contributions = append(contributions, accountContribution{Provider: row.Provider, Used: row.Used, Limit: row.Limit})
+		contributions = append(contributions, accountContribution{
+			Provider: row.Provider, PercentUsed: row.PercentUsed,
+			AbsoluteUsed: row.AbsoluteUsed, AbsoluteLimit: row.AbsoluteLimit, Unit: row.Unit,
+		})
 	}
 
-	byProvider := make(map[string]*repository.ProviderQuotaUsage, len(account.Providers()))
+	type providerAccumulator struct {
+		percentUsed   float64
+		percentLimit  float64
+		absoluteUsed  float64
+		absoluteLimit float64
+		accounts      int64
+		unit          string
+		unitMixed     bool
+	}
+	byProvider := make(map[string]*providerAccumulator, len(account.Providers()))
 	for _, providerValue := range account.Providers() {
-		byProvider[string(providerValue)] = &repository.ProviderQuotaUsage{Provider: string(providerValue)}
+		byProvider[string(providerValue)] = &providerAccumulator{}
 	}
 	for _, item := range contributions {
 		usage := byProvider[item.Provider]
 		if usage == nil {
-			usage = &repository.ProviderQuotaUsage{Provider: item.Provider}
+			usage = &providerAccumulator{}
 			byProvider[item.Provider] = usage
 		}
-		used := item.Used
-		if used < 0 {
-			used = 0
+		percentUsed := item.PercentUsed
+		if percentUsed < 0 {
+			percentUsed = 0
 		}
-		if used > item.Limit {
-			used = item.Limit
+		if percentUsed > 100 {
+			percentUsed = 100
 		}
-		usage.Used += used
-		usage.Limit += item.Limit
-		usage.Accounts++
+		usage.percentUsed += percentUsed
+		usage.percentLimit += 100
+		usage.accounts++
+		if usage.unit == "" {
+			usage.unit = item.Unit
+		} else if usage.unit != item.Unit {
+			usage.unitMixed = true
+		}
+		if !usage.unitMixed {
+			absoluteUsed := item.AbsoluteUsed
+			if absoluteUsed < 0 {
+				absoluteUsed = 0
+			}
+			if absoluteUsed > item.AbsoluteLimit {
+				absoluteUsed = item.AbsoluteLimit
+			}
+			usage.absoluteUsed += absoluteUsed
+			usage.absoluteLimit += item.AbsoluteLimit
+		}
 	}
 	result := make([]repository.ProviderQuotaUsage, 0, len(byProvider))
 	for _, providerValue := range account.Providers() {
-		usage := byProvider[string(providerValue)]
-		if usage.Limit > 0 {
-			usage.UsagePercent = usage.Used / usage.Limit * 100
+		acc := byProvider[string(providerValue)]
+		usage := repository.ProviderQuotaUsage{Provider: string(providerValue), Accounts: acc.accounts}
+		if acc.percentLimit > 0 {
+			usage.UsagePercent = acc.percentUsed / acc.percentLimit * 100
 			if usage.UsagePercent > 100 {
 				usage.UsagePercent = 100
 			}
 		}
-		result = append(result, *usage)
+		if acc.unitMixed {
+			usage.Unit = "mixed"
+		} else if acc.unit != "" && acc.absoluteLimit > 0 {
+			usage.Unit = acc.unit
+			usage.Used = acc.absoluteUsed
+			usage.Limit = acc.absoluteLimit
+		}
+		result = append(result, usage)
 	}
 	return result, nil
 }

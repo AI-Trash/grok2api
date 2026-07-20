@@ -95,13 +95,16 @@ type AccountSummary struct {
 }
 
 // ProviderQuotaUsage 表示单个上游渠道在已同步额度账号上的池级用量。
-// Used/Limit 已按账号归一到百分比单位（每个有效账号 Limit 贡献 100），UsagePercent = Used/Limit*100。
+// UsagePercent 由各账号使用率等权平均得到。
+// Used/Limit 在 Unit 一致时为原生量纲累加（tokens/credits/requests/percent）；Unit 为 mixed 时仅 UsagePercent 可信。
 type ProviderQuotaUsage struct {
 	Provider     string
 	Used         float64
 	Limit        float64
 	UsagePercent float64
 	Accounts     int64
+	// Unit 为 tokens、credits、percent、requests 或 mixed。
+	Unit string
 }
 
 type ModelListFilter struct {

@@ -688,7 +688,7 @@ export function AccountsPage() {
   const invalidAccounts = summary?.issues.reauthRequired ?? 0;
   const riskAccounts = summary?.risk ?? 0;
   const abnormalAccounts = recoveringAccounts + disabledAccounts + invalidAccounts;
-  const emptyProviderSummary = { total: 0, available: 0, quotaUsed: 0, quotaLimit: 0, usagePercent: 0, quotaKnown: false };
+  const emptyProviderSummary = { total: 0, available: 0, quotaUsed: 0, quotaLimit: 0, usagePercent: 0, quotaKnown: false, quotaUnit: "" as const };
   const buildSummary = summary?.providers.grok_build ?? emptyProviderSummary;
   const webSummary = summary?.providers.grok_web ?? emptyProviderSummary;
   const consoleSummary = summary?.providers.grok_console ?? emptyProviderSummary;
@@ -709,12 +709,36 @@ export function AccountsPage() {
     || webConfirmationMutation.isPending
     || webAccountScriptsMutation.isPending;
 
-  function providerQuotaDetail(providerSummary: typeof emptyProviderSummary): string {
+  function providerQuotaDetail(providerSummary: typeof emptyProviderSummary): { text: string; quotaTooltip?: string } {
     const routable = t("accounts.routableAccountCount", { count: formatNumber(providerSummary.available, i18n.language, 0) });
-    if (summaryUnavailable) return routable;
-    if (!providerSummary.quotaKnown) return `${routable} · ${t("accounts.quotaUsageUnknown")}`;
-    return `${routable} · ${t("accounts.quotaUsagePercent", { percent: formatNumber(providerSummary.usagePercent, i18n.language, 1) })}`;
+    if (summaryUnavailable) return { text: routable };
+    if (!providerSummary.quotaKnown) return { text: `${routable} · ${t("accounts.quotaUsageUnknown")}` };
+    const percentText = t("accounts.quotaUsagePercent", { percent: formatNumber(providerSummary.usagePercent, i18n.language, 1) });
+    const used = formatNumber(providerSummary.quotaUsed, i18n.language, providerSummary.quotaUnit === "percent" ? 1 : 0);
+    const limit = formatNumber(providerSummary.quotaLimit, i18n.language, providerSummary.quotaUnit === "percent" ? 1 : 0);
+    let quotaTooltip: string | undefined;
+    switch (providerSummary.quotaUnit) {
+      case "tokens":
+        quotaTooltip = t("accounts.quotaUsageTokensTooltip", { used, limit });
+        break;
+      case "credits":
+        quotaTooltip = t("accounts.quotaUsageCreditsTooltip", { used, limit });
+        break;
+      case "requests":
+        quotaTooltip = t("accounts.quotaUsageRequestsTooltip", { used, limit });
+        break;
+      case "percent":
+        quotaTooltip = t("accounts.quotaUsagePercentTooltip", { used, limit });
+        break;
+      default:
+        break;
+    }
+    return { text: `${routable} · ${percentText}`, quotaTooltip };
   }
+
+  const buildQuotaDetail = providerQuotaDetail(buildSummary);
+  const webQuotaDetail = providerQuotaDetail(webSummary);
+  const consoleQuotaDetail = providerQuotaDetail(consoleSummary);
 
   return (
     <div className="space-y-5">
@@ -729,7 +753,8 @@ export function AccountsPage() {
           loading={summaryLoading}
           label={t("accounts.buildAccountCount")}
           value={summaryUnavailable ? "-" : formatNumber(buildSummary.total, i18n.language, 0)}
-          detail={providerQuotaDetail(buildSummary)}
+          detail={buildQuotaDetail.text}
+          detailTooltip={buildQuotaDetail.quotaTooltip}
           usagePercent={summaryUnavailable || !buildSummary.quotaKnown ? undefined : buildSummary.usagePercent}
         />
         <AccountMetricPanel
@@ -738,7 +763,8 @@ export function AccountsPage() {
           loading={summaryLoading}
           label={t("accounts.webAccountCount")}
           value={summaryUnavailable ? "-" : formatNumber(webSummary.total, i18n.language, 0)}
-          detail={providerQuotaDetail(webSummary)}
+          detail={webQuotaDetail.text}
+          detailTooltip={webQuotaDetail.quotaTooltip}
           usagePercent={summaryUnavailable || !webSummary.quotaKnown ? undefined : webSummary.usagePercent}
         />
         <AccountMetricPanel
@@ -747,7 +773,8 @@ export function AccountsPage() {
           loading={summaryLoading}
           label={t("accounts.consoleAccountCount")}
           value={summaryUnavailable ? "-" : formatNumber(consoleSummary.total, i18n.language, 0)}
-          detail={providerQuotaDetail(consoleSummary)}
+          detail={consoleQuotaDetail.text}
+          detailTooltip={consoleQuotaDetail.quotaTooltip}
           usagePercent={summaryUnavailable || !consoleSummary.quotaKnown ? undefined : consoleSummary.usagePercent}
         />
         <AccountMetricPanel
@@ -1263,18 +1290,31 @@ function downloadAccountExport(blob: Blob, name: AccountProvider | string): void
 }
 
 function AccountMetricPanel({
-  icon, label, value, detail, loading, tone, usagePercent,
+  icon, label, value, detail, detailTooltip, loading, tone, usagePercent,
 }: {
   icon: ReactNode;
   label: string;
   value: string;
   detail: string;
+  detailTooltip?: string;
   loading: boolean;
   tone: string;
   usagePercent?: number;
 }) {
   const showQuota = usagePercent !== undefined && !loading;
   const percent = showQuota ? Math.max(0, Math.min(100, usagePercent)) : 0;
+  const detailNode = detailTooltip ? (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button type="button" className="max-w-full truncate text-left text-[11px] text-muted-foreground underline decoration-dotted underline-offset-2 transition-colors hover:text-foreground">
+          {detail}
+        </button>
+      </TooltipTrigger>
+      <TooltipContent>{detailTooltip}</TooltipContent>
+    </Tooltip>
+  ) : (
+    <p className="min-h-4 truncate text-[11px] text-muted-foreground" title={detail}>{detail}</p>
+  );
   return (
     <div className="min-h-28 rounded-lg bg-card p-4" aria-busy={loading}>
       <div className="flex min-h-5 items-center justify-between gap-3">
@@ -1282,7 +1322,7 @@ function AccountMetricPanel({
         <span className={cn("flex size-5 items-center justify-center [&_svg]:size-4", tone)}>{icon}</span>
       </div>
       <div className="mt-3 flex min-h-8 items-center text-2xl font-medium tracking-tight tabular-nums">{loading ? <Spinner /> : value}</div>
-      <p className={cn("mt-1.5 min-h-4 truncate text-[11px] text-muted-foreground", loading && "invisible")} title={detail}>{detail}</p>
+      <div className={cn("mt-1.5 min-h-4", loading && "invisible")}>{detailNode}</div>
       {showQuota ? (
         <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-muted" aria-hidden>
           <div className="h-full bg-primary transition-[width] duration-300" style={{ width: `${percent}%` }} />

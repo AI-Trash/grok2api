@@ -392,18 +392,54 @@ func TestAccountRepositorySummarizesQuotaUsage(t *testing.T) {
 	}
 
 	build := byProvider[string(account.ProviderBuild)]
-	// 各账号先归一到百分比：paid 40% + super weekly 25% + free 25% => 90/300 = 30%
-	if build.Accounts != 3 || build.Used != 90 || build.Limit != 300 || build.UsagePercent != 30 {
+	// 各账号等权平均：paid 40% + super weekly 25% + free 25% => 30%；量纲混合故 Unit=mixed
+	if build.Accounts != 3 || build.UsagePercent != 30 || build.Unit != "mixed" || build.Used != 0 || build.Limit != 0 {
 		t.Fatalf("build quota usage = %#v", build)
 	}
 	web := byProvider[string(account.ProviderWeb)]
-	// weekly 60% + modes 45/60=75% => 135/200 = 67.5%
-	if web.Accounts != 2 || web.Used != 135 || web.Limit != 200 || web.UsagePercent != 67.5 {
+	// weekly 60% + modes 75% => 67.5%；weekly 为 percent、modes 为 requests => mixed
+	if web.Accounts != 2 || web.UsagePercent != 67.5 || web.Unit != "mixed" {
 		t.Fatalf("web quota usage = %#v", web)
 	}
 	consoleUsage := byProvider[string(account.ProviderConsole)]
-	if consoleUsage.Accounts != 1 || consoleUsage.Used != 75 || consoleUsage.Limit != 100 || consoleUsage.UsagePercent != 75 {
+	if consoleUsage.Accounts != 1 || consoleUsage.Used != 75 || consoleUsage.Limit != 100 || consoleUsage.UsagePercent != 75 || consoleUsage.Unit != "requests" {
 		t.Fatalf("console quota usage = %#v", consoleUsage)
+	}
+
+	// 纯 Free token 池应返回绝对 token 用量。
+	freeOnly := create(account.ProviderBuild, "build-free-only", func(value *account.Credential) {
+		value.ObservedModel = "grok-4-build-free"
+	})
+	if err := repo.SaveBilling(ctx, account.Billing{AccountID: freeOnly.ID, PlanName: "Free", SyncedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.db.WithContext(ctx).Create(&requestAuditModel{
+		RequestID: "free-only-tokens", ClientKeyID: 1, ModelRouteID: 1, AccountID: &freeOnly.ID, Provider: "grok_build",
+		Operation: "responses", UsageSource: "upstream", StatusCode: 200, TotalTokens: 113_000, CreatedAt: now.Add(-time.Hour),
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	// 关掉前面的 Build 账号，只保留 free-only。
+	for _, value := range []account.Credential{buildPaid, buildPercent, buildFree} {
+		value.Enabled = false
+		if _, err := repo.Update(ctx, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rows, err = repo.SummarizeQuotaUsage(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byProvider = make(map[string]repository.ProviderQuotaUsage, len(rows))
+	for _, row := range rows {
+		byProvider[row.Provider] = row
+	}
+	build = byProvider[string(account.ProviderBuild)]
+	if build.Accounts != 1 || build.Unit != "tokens" || build.Used != 113_000 || build.Limit != 1_000_000 {
+		t.Fatalf("free-only build quota usage = %#v", build)
+	}
+	if build.UsagePercent < 11.2 || build.UsagePercent > 11.4 {
+		t.Fatalf("free-only usage percent = %v", build.UsagePercent)
 	}
 }
 

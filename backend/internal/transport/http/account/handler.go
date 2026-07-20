@@ -409,6 +409,7 @@ func providerSummaryResponse(value accountapp.ProviderSummary) gin.H {
 		"total": value.Total, "available": value.Available,
 		"quotaUsed": value.QuotaUsed, "quotaLimit": value.QuotaLimit,
 		"usagePercent": value.UsagePercent, "quotaKnown": value.QuotaKnown,
+		"quotaUnit": value.QuotaUnit,
 	}
 }
 
