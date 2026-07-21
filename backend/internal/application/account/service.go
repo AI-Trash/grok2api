@@ -277,6 +277,7 @@ type Service struct {
 	deviceSessions        repository.DeviceSessionRepository
 	sticky                repository.StickySessionRepository
 	refreshLock           repository.DistributedLock
+	concurrency           repository.ConcurrencyLimiter
 	quotaQueue            repository.QuotaRecoveryQueue
 	providers             *provider.Registry
 	cipher                *security.Cipher
@@ -293,6 +294,10 @@ type Service struct {
 	syncPool              *batch.Pool
 	refreshPool           *batch.Pool
 	credentialRefreshWake chan struct{}
+	autoCleanMu           sync.RWMutex
+	autoClean             AutoCleanConfig
+	autoCleanRevision     uint64
+	autoCleanWake         chan struct{}
 	buildBotFlagCache     *resultcache.Cache[string, []uint64]
 	logger                *slog.Logger
 	now                   func() time.Time
@@ -302,6 +307,11 @@ func (s *Service) SetQuotaRecoveryQueue(queue repository.QuotaRecoveryQueue) {
 	s.quotaQueue = queue
 }
 
+// SetConcurrencyLimiter 让账号维护任务读取与推理路由相同的活动租约。
+func (s *Service) SetConcurrencyLimiter(value repository.ConcurrencyLimiter) {
+	s.concurrency = value
+}
+
 func NewService(accounts repository.AccountRepository, audits repository.AuditRepository, deviceSessions repository.DeviceSessionRepository, sticky repository.StickySessionRepository, providers *provider.Registry, cipher *security.Cipher, refreshLock repository.DistributedLock) *Service {
 	return &Service{
 		accounts: accounts, audits: audits, deviceSessions: deviceSessions, sticky: sticky,
@@ -309,8 +319,12 @@ func NewService(accounts repository.AccountRepository, audits repository.AuditRe
 		lastRefreshAt: make(map[uint64]time.Time), quotaRefreshes: make(map[string]*webQuotaRefreshState),
 		quotaRefreshQueue:     make(chan webQuotaRefreshRequest, webQuotaRefreshQueueSize),
 		credentialRefreshWake: make(chan struct{}, 1),
-		buildBotFlagCache:     resultcache.New[string, []uint64](1, buildBotFlagCacheTTL),
-		conversionPool:        batch.NewPool(25), syncPool: batch.NewPool(25), refreshPool: batch.NewPool(25), logger: slog.Default(),
+		autoClean: AutoCleanConfig{
+			Enabled: false, Interval: 10 * time.Minute, MinAge: time.Hour, IncludeDisabled: false,
+		},
+		autoCleanWake:     make(chan struct{}, 1),
+		buildBotFlagCache: resultcache.New[string, []uint64](1, buildBotFlagCacheTTL),
+		conversionPool:    batch.NewPool(25), syncPool: batch.NewPool(25), refreshPool: batch.NewPool(25), logger: slog.Default(),
 		now: func() time.Time { return time.Now().UTC() },
 	}
 }
