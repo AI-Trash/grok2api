@@ -15,7 +15,7 @@ func TestJWTPayloadClaim(t *testing.T) {
 		return "hdr." + base64.RawURLEncoding.EncodeToString(payload) + ".sig"
 	}
 
-	// bot_flag_source 已知可能值为数字 1。
+	// bot_flag_source 已知可能值为数字 1 或 2。
 	value, found, ok := JWTPayloadClaim(encode(map[string]any{"bot_flag_source": 1, "sub": "user-1"}), "bot_flag_source")
 	if !ok || !found || value != "1" {
 		t.Fatalf("numeric claim = %q found=%v ok=%v", value, found, ok)

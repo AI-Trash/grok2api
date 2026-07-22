@@ -44,8 +44,10 @@ func TestCredentialMetadataMarksOnlyNumericBotFlagOne(t *testing.T) {
 	}{
 		{name: "numeric one", provider: account.ProviderBuild, claims: map[string]any{"bot_flag_source": 1}, want: true},
 		{name: "numeric zero", provider: account.ProviderBuild, claims: map[string]any{"bot_flag_source": 0}},
-		{name: "numeric two", provider: account.ProviderBuild, claims: map[string]any{"bot_flag_source": 2}},
+		{name: "numeric two", provider: account.ProviderBuild, claims: map[string]any{"bot_flag_source": 2}, want: true},
+		{name: "numeric three", provider: account.ProviderBuild, claims: map[string]any{"bot_flag_source": 3}},
 		{name: "string one", provider: account.ProviderBuild, claims: map[string]any{"bot_flag_source": "1"}},
+		{name: "string two", provider: account.ProviderBuild, claims: map[string]any{"bot_flag_source": "2"}},
 		{name: "missing claim", provider: account.ProviderBuild, claims: map[string]any{"sub": "user"}},
 		{name: "malformed jwt", provider: account.ProviderBuild, token: "not-a-jwt"},
 		{name: "non build", provider: account.ProviderWeb, claims: map[string]any{"bot_flag_source": 1}},

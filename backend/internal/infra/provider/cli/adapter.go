@@ -89,7 +89,7 @@ func (a *Adapter) SetReasoningReplay(replay *reasoningreplay.ReasoningReplay) {
 func (a *Adapter) Provider() account.Provider { return account.ProviderBuild }
 
 // CredentialMetadata extracts only non-sensitive risk flags from a Build access token.
-// bot_flag_source must be JSON number 1; other values, malformed tokens, and decryption failures are not marked.
+// bot_flag_source must be JSON number 1 or 2; other values, malformed tokens, and decryption failures are not marked.
 func (a *Adapter) CredentialMetadata(credential account.Credential) provider.CredentialMetadata {
 	if credential.Provider != account.ProviderBuild || a.cipher == nil || credential.EncryptedAccessToken == "" {
 		return provider.CredentialMetadata{}
@@ -99,7 +99,7 @@ func (a *Adapter) CredentialMetadata(credential account.Credential) provider.Cre
 		return provider.CredentialMetadata{}
 	}
 	value, ok := decodeJWTClaims(accessToken)["bot_flag_source"].(float64)
-	return provider.CredentialMetadata{BuildBotFlagged: ok && value == 1}
+	return provider.CredentialMetadata{BuildBotFlagged: ok && (value == 1 || value == 2)}
 }
 
 func (a *Adapter) UpdateConfig(cfg Config) {
@@ -185,7 +185,7 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 		}
 		return a.forwardGatewayCompaction(ctx, request, accessToken, body, warnings)
 	}
-	// Explicit mode wins; in auto mode only confirmed Super accounts with bot_flag_source=1 default to XAI.
+	// Explicit mode wins; in auto mode only confirmed Super accounts with bot_flag_source=1|2 default to XAI.
 	primaryBase := a.primaryBaseURL()
 	base := a.inferenceBaseForOperation(request.Credential, request.Billing, request.Method, request.Path)
 	// Cache affinity and reasoning replay use separate identities. Replay is also bound to the actual account and upstream plane,

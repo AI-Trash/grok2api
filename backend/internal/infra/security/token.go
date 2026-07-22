@@ -128,7 +128,7 @@ func formatJWTClaimValue(raw json.RawMessage) string {
 	if len(raw) == 0 || string(raw) == "null" {
 		return ""
 	}
-	// bot_flag_source 等 claim 的已知形态为数字（例如 1），优先按 number 解析，避免被其它类型误读。
+	// bot_flag_source 等 claim 的已知形态为数字（例如 1、2），优先按 number 解析，避免被其它类型误读。
 	decoder := json.NewDecoder(strings.NewReader(string(raw)))
 	decoder.UseNumber()
 	var asNumber json.Number

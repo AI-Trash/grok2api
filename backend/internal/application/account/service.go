@@ -134,7 +134,7 @@ const (
 	CleanupStatusCooldown       CleanupStatus = "cooldown"
 	CleanupStatusDisabled       CleanupStatus = "disabled"
 	CleanupStatusReauthRequired CleanupStatus = "reauthRequired"
-	// CleanupStatusBotFlagged 仅对 Grok Build 有效：删除上游风控标记（JWT bot_flag_source）账号。
+	// CleanupStatusBotFlagged 仅对 Grok Build 有效：删除上游风控标记（JWT bot_flag_source=1|2）账号。
 	CleanupStatusBotFlagged CleanupStatus = "botFlagged"
 )
 
@@ -466,7 +466,7 @@ func (s *Service) BotFlaggedSummary(ctx context.Context) (BotFlaggedSummary, err
 	return result, nil
 }
 
-// DeleteBotFlaggedAccounts 删除所有 Grok Build 中上游风控标记（bot_flag_source）账号，按 500 一批删除。
+// DeleteBotFlaggedAccounts 删除所有 Grok Build 中上游风控标记（bot_flag_source=1|2）账号，按 500 一批删除。
 func (s *Service) DeleteBotFlaggedAccounts(ctx context.Context) (int64, error) {
 	const deleteBatchSize = 500
 	var (
