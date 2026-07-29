@@ -351,6 +351,139 @@ func TestAccountRepositorySummarizesOperationalStates(t *testing.T) {
 	}
 }
 
+func TestAccountRepositorySummarizesQuotaUsage(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC()
+	database := openTestDatabase(t)
+	repo := NewAccountRepository(database)
+	create := func(provider account.Provider, name string, opts ...func(*account.Credential)) account.Credential {
+		value := account.Credential{
+			Provider: provider, Name: name, SourceKey: name, EncryptedAccessToken: testEncryptedToken, AuthStatus: account.AuthStatusActive, Enabled: true,
+		}
+		for _, opt := range opts {
+			opt(&value)
+		}
+		created, _, err := repo.UpsertByIdentity(ctx, value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return created
+	}
+
+	buildPaid := create(account.ProviderBuild, "build-paid")
+	if err := repo.SaveBilling(ctx, account.Billing{AccountID: buildPaid.ID, MonthlyLimit: 100, Used: 40, SyncedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	// Super weekly percent：仅 paid 计划可走 credit_usage_percent。
+	buildPercent := create(account.ProviderBuild, "build-percent")
+	if err := repo.SaveBilling(ctx, account.Billing{AccountID: buildPercent.ID, PlanName: "SuperGrok", CreditUsagePercent: 25, UsagePeriodType: "USAGE_PERIOD_TYPE_WEEKLY", SyncedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	// Free 账号即使 credit_usage_percent=99 也不能按 99% 计入；应按近 24h token / 1e6。
+	buildFree := create(account.ProviderBuild, "build-free", func(value *account.Credential) {
+		value.ObservedModel = "grok-4.5-build-free"
+	})
+	if err := repo.SaveBilling(ctx, account.Billing{
+		AccountID: buildFree.ID, PlanName: "Free", CreditUsagePercent: 99, UsagePeriodType: "USAGE_PERIOD_TYPE_WEEKLY", SyncedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.db.WithContext(ctx).Create(&requestAuditModel{
+		RequestID: "free-tokens", ClientKeyID: 1, ModelRouteID: 1, AccountID: &buildFree.ID, Provider: "grok_build",
+		Operation: "responses", UsageSource: "upstream", StatusCode: 200, TotalTokens: 250_000, CreatedAt: now.Add(-time.Hour),
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	buildDisabled := create(account.ProviderBuild, "build-disabled")
+	if err := repo.SaveBilling(ctx, account.Billing{AccountID: buildDisabled.ID, MonthlyLimit: 50, Used: 50, SyncedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	buildDisabled.Enabled = false
+	if _, err := repo.Update(ctx, buildDisabled); err != nil {
+		t.Fatal(err)
+	}
+
+	webWeekly := create(account.ProviderWeb, "web-weekly")
+	if err := repo.SaveQuotaWindows(ctx, webWeekly.ID, account.WebTierSuper, now, []account.QuotaWindow{
+		{AccountID: webWeekly.ID, Mode: "weekly", Remaining: 0, Total: 0, UsagePercent: 60, UpdatedAt: now},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	webModes := create(account.ProviderWeb, "web-modes")
+	if err := repo.SaveQuotaWindows(ctx, webModes.ID, account.WebTierBasic, now, []account.QuotaWindow{
+		{AccountID: webModes.ID, Mode: "fast", Remaining: 10, Total: 40, UpdatedAt: now},
+		{AccountID: webModes.ID, Mode: "auto", Remaining: 5, Total: 20, UpdatedAt: now},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	console := create(account.ProviderConsole, "console")
+	if err := repo.SaveQuotaWindows(ctx, console.ID, account.WebTierAuto, now, []account.QuotaWindow{
+		{AccountID: console.ID, Mode: "console", Remaining: 25, Total: 100, UpdatedAt: now},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	rows, err := repo.SummarizeQuotaUsage(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byProvider := make(map[string]repository.ProviderQuotaUsage, len(rows))
+	for _, row := range rows {
+		byProvider[row.Provider] = row
+	}
+
+	build := byProvider[string(account.ProviderBuild)]
+	// 各账号等权平均：paid 40% + super weekly 25% + free 25% => 30%；量纲混合故 Unit=mixed
+	if build.Accounts != 3 || build.UsagePercent != 30 || build.Unit != "mixed" || build.Used != 0 || build.Limit != 0 {
+		t.Fatalf("build quota usage = %#v", build)
+	}
+	web := byProvider[string(account.ProviderWeb)]
+	// weekly 60% + modes 75% => 67.5%；weekly 为 percent、modes 为 requests => mixed
+	if web.Accounts != 2 || web.UsagePercent != 67.5 || web.Unit != "mixed" {
+		t.Fatalf("web quota usage = %#v", web)
+	}
+	consoleUsage := byProvider[string(account.ProviderConsole)]
+	if consoleUsage.Accounts != 1 || consoleUsage.Used != 75 || consoleUsage.Limit != 100 || consoleUsage.UsagePercent != 75 || consoleUsage.Unit != "requests" {
+		t.Fatalf("console quota usage = %#v", consoleUsage)
+	}
+
+	// 纯 Free token 池应返回绝对 token 用量。
+	freeOnly := create(account.ProviderBuild, "build-free-only", func(value *account.Credential) {
+		value.ObservedModel = "grok-4-build-free"
+	})
+	if err := repo.SaveBilling(ctx, account.Billing{AccountID: freeOnly.ID, PlanName: "Free", SyncedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.db.WithContext(ctx).Create(&requestAuditModel{
+		RequestID: "free-only-tokens", ClientKeyID: 1, ModelRouteID: 1, AccountID: &freeOnly.ID, Provider: "grok_build",
+		Operation: "responses", UsageSource: "upstream", StatusCode: 200, TotalTokens: 113_000, CreatedAt: now.Add(-time.Hour),
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	// 关掉前面的 Build 账号，只保留 free-only。
+	for _, value := range []account.Credential{buildPaid, buildPercent, buildFree} {
+		value.Enabled = false
+		if _, err := repo.Update(ctx, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rows, err = repo.SummarizeQuotaUsage(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byProvider = make(map[string]repository.ProviderQuotaUsage, len(rows))
+	for _, row := range rows {
+		byProvider[row.Provider] = row
+	}
+	build = byProvider[string(account.ProviderBuild)]
+	if build.Accounts != 1 || build.Unit != "tokens" || build.Used != 113_000 || build.Limit != 1_000_000 {
+		t.Fatalf("free-only build quota usage = %#v", build)
+	}
+	if build.UsagePercent < 11.2 || build.UsagePercent > 11.4 {
+		t.Fatalf("free-only usage percent = %v", build.UsagePercent)
+	}
+}
+
 func TestAccountIdentityPrefersStableOAuthIdentity(t *testing.T) {
 	first := accountIdentity(account.Credential{Provider: account.ProviderBuild, UserID: "user-1", TeamID: "team-1", SourceKey: "device:old-token"})
 	second := accountIdentity(account.Credential{Provider: account.ProviderBuild, UserID: "user-1", TeamID: "team-1", SourceKey: "device:new-token"})
