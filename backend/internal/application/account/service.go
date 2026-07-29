@@ -171,6 +171,8 @@ const (
 	CleanupStatusCooldown       CleanupStatus = "cooldown"
 	CleanupStatusDisabled       CleanupStatus = "disabled"
 	CleanupStatusReauthRequired CleanupStatus = "reauthRequired"
+	// CleanupStatusBotFlagged 仅对 Grok Build 有效：删除上游风控标记（JWT bot_flag_source=1|2）账号。
+	CleanupStatusBotFlagged CleanupStatus = "botFlagged"
 )
 
 type DeviceStartResult struct {
@@ -255,8 +257,14 @@ type Summary struct {
 }
 
 type ProviderSummary struct {
-	Total     int64
-	Available int64
+	Total        int64
+	Available    int64
+	QuotaUsed    float64
+	QuotaLimit   float64
+	UsagePercent float64
+	QuotaKnown   bool
+	// QuotaUnit 为 tokens、credits、percent、requests 或 mixed；mixed 时 Used/Limit 不展示。
+	QuotaUnit string
 }
 
 type RecoverySummary struct {
@@ -288,6 +296,19 @@ func (s *Service) Summary(ctx context.Context) (Summary, error) {
 		result.Issues.Disabled += row.Disabled
 		result.Issues.ReauthRequired += row.ReauthRequired
 		result.Providers[row.Provider] = ProviderSummary{Total: row.Total, Available: row.Available}
+	}
+	quotaRows, err := s.accounts.SummarizeQuotaUsage(ctx)
+	if err != nil {
+		return Summary{}, err
+	}
+	for _, row := range quotaRows {
+		current := result.Providers[row.Provider]
+		current.QuotaUsed = row.Used
+		current.QuotaLimit = row.Limit
+		current.UsagePercent = row.UsagePercent
+		current.QuotaKnown = row.Accounts > 0
+		current.QuotaUnit = row.Unit
+		result.Providers[row.Provider] = current
 	}
 	result.Recovering = result.Recovery.Cooldown + result.Recovery.WaitingReset + result.Recovery.Probing
 	result.Attention = result.Issues.Disabled + result.Issues.ReauthRequired
@@ -503,6 +524,91 @@ func (s *Service) List(ctx context.Context, page, pageSize int, search string, f
 		views = append(views, view)
 	}
 	return views, total, nil
+}
+
+// BotFlaggedSummary 表示 Grok Build 上游风控标记账号数量。
+type BotFlaggedSummary struct {
+	Marked int64
+	Total  int64
+}
+
+// BotFlaggedSummary 扫描全部 Grok Build 账号，返回上游风控标记数与总数。
+func (s *Service) BotFlaggedSummary(ctx context.Context) (BotFlaggedSummary, error) {
+	var (
+		afterID uint64
+		result  BotFlaggedSummary
+	)
+	for {
+		values, total, err := s.accounts.ListProviderAccountBatch(ctx, accountdomain.ProviderBuild, afterID, accountTaskBatchSize)
+		if err != nil {
+			return BotFlaggedSummary{}, err
+		}
+		if afterID == 0 {
+			result.Total = total
+		}
+		if len(values) == 0 {
+			break
+		}
+		for _, value := range values {
+			if s.isBotFlagged(value) {
+				result.Marked++
+			}
+			afterID = value.ID
+		}
+		if len(values) < accountTaskBatchSize {
+			break
+		}
+	}
+	return result, nil
+}
+
+// DeleteBotFlaggedAccounts 删除所有 Grok Build 中上游风控标记（bot_flag_source=1|2）账号，按 500 一批删除。
+func (s *Service) DeleteBotFlaggedAccounts(ctx context.Context) (int64, error) {
+	const deleteBatchSize = 500
+	var (
+		afterID uint64
+		deleted int64
+		pending = make([]uint64, 0, deleteBatchSize)
+	)
+	flush := func() error {
+		if len(pending) == 0 {
+			return nil
+		}
+		count, err := s.BatchDelete(ctx, pending)
+		if err != nil {
+			return err
+		}
+		deleted += count
+		pending = pending[:0]
+		return nil
+	}
+	for {
+		values, _, err := s.accounts.ListProviderAccountBatch(ctx, accountdomain.ProviderBuild, afterID, accountTaskBatchSize)
+		if err != nil {
+			return deleted, err
+		}
+		if len(values) == 0 {
+			break
+		}
+		for _, value := range values {
+			if s.isBotFlagged(value) {
+				pending = append(pending, value.ID)
+				if len(pending) >= deleteBatchSize {
+					if err := flush(); err != nil {
+						return deleted, err
+					}
+				}
+			}
+			afterID = value.ID
+		}
+		if len(values) < accountTaskBatchSize {
+			break
+		}
+	}
+	if err := flush(); err != nil {
+		return deleted, err
+	}
+	return deleted, nil
 }
 
 func (s *Service) buildBotFlaggedAccountIDs(ctx context.Context) ([]uint64, error) {
@@ -728,6 +834,7 @@ type CleanupResult struct {
 }
 
 // validateCleanupSelection validates cleanup states and linked target providers.
+// botFlagged is only valid for Grok Build and may be combined with other states.
 func validateCleanupSelection(providerValue accountdomain.Provider, statuses []CleanupStatus, targets []accountdomain.Provider) (map[CleanupStatus]struct{}, error) {
 	if !providerValue.IsValid() {
 		return nil, invalidInput("账号来源无效")
@@ -736,6 +843,11 @@ func validateCleanupSelection(providerValue accountdomain.Provider, statuses []C
 	for _, status := range statuses {
 		switch status {
 		case CleanupStatusCooldown, CleanupStatusDisabled, CleanupStatusReauthRequired:
+			selected[status] = struct{}{}
+		case CleanupStatusBotFlagged:
+			if providerValue != accountdomain.ProviderBuild {
+				return nil, invalidInput("风控账号清理仅支持 Grok Build")
+			}
 			selected[status] = struct{}{}
 		default:
 			return nil, invalidInput("账号清理状态无效")
@@ -758,6 +870,7 @@ func validateCleanupSelection(providerValue accountdomain.Provider, statuses []C
 // CleanupAccounts deletes accounts in selected admin states; healthy, waiting-reset, and probing accounts are excluded.
 // Linked targets are resolved from binding tables regardless of peer state, and active-media groups are skipped whole.
 // The ID cursor always advances, so skipped groups cannot stall a cleanup batch.
+// botFlagged is Grok Build only and may be selected alongside other states.
 func (s *Service) CleanupAccounts(ctx context.Context, providerValue accountdomain.Provider, statuses []CleanupStatus, targets []accountdomain.Provider) (CleanupResult, error) {
 	out := CleanupResult{DeletedByProvider: map[accountdomain.Provider]int64{}}
 	selected, err := validateCleanupSelection(providerValue, statuses, targets)
@@ -792,6 +905,18 @@ func (s *Service) CleanupAccounts(ctx context.Context, providerValue accountdoma
 				break
 			}
 			afterID = maxID
+		}
+	}
+	if _, ok := selected[CleanupStatusBotFlagged]; ok {
+		// DeleteBotFlaggedAccounts handles sticky / refresh state and bot flag cache.
+		count, err := s.DeleteBotFlaggedAccounts(ctx)
+		if err != nil {
+			return out, err
+		}
+		out.Deleted += count
+		out.RootsDeleted += count
+		if count > 0 {
+			out.DeletedByProvider[accountdomain.ProviderBuild] += count
 		}
 	}
 	if out.Deleted > 0 {
@@ -849,6 +974,10 @@ func (s *Service) Get(ctx context.Context, id uint64) (View, error) {
 		return View{}, err
 	}
 	return view, nil
+}
+
+func (s *Service) isBotFlagged(credential accountdomain.Credential) bool {
+	return s.credentialMetadata(credential).BuildBotFlagged
 }
 
 func (s *Service) credentialMetadata(value accountdomain.Credential) provider.CredentialMetadata {
@@ -1840,6 +1969,18 @@ func (s *Service) marshalProviderCredentials(providerValue accountdomain.Provide
 		return ExportResult{}, err
 	}
 	return ExportResult{Data: data, Count: len(seeds)}, nil
+}
+
+// ExportCredential 导出单个 Grok Build 账号的 OAuth 凭据文档，格式与批量导出/导入一致。
+func (s *Service) ExportCredential(ctx context.Context, id uint64) (ExportResult, error) {
+	value, err := s.accounts.Get(ctx, id)
+	if err != nil {
+		return ExportResult{}, mapRepositoryError(err)
+	}
+	if value.Provider != accountdomain.ProviderBuild {
+		return ExportResult{}, ErrUnsupported
+	}
+	return s.marshalProviderCredentials(accountdomain.ProviderBuild, []accountdomain.Credential{value})
 }
 
 func (s *Service) Update(ctx context.Context, id uint64, input UpdateInput) (View, error) {

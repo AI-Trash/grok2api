@@ -5,7 +5,7 @@ import type { SortOrder } from "@/shared/lib/table-sort";
 
 export type AccountProvider = "grok_build" | "grok_web" | "grok_console";
 export type BuildRouteMode = "auto" | "build" | "xai";
-export type AccountCleanupStatus = "cooldown" | "disabled" | "reauthRequired";
+export type AccountCleanupStatus = "cooldown" | "disabled" | "reauthRequired" | "botFlagged";
 
 export type BillingDTO = {
   planCode?: string;
@@ -128,13 +128,25 @@ export type AccountUpdateInput = {
   buildRouteMode?: BuildRouteMode;
 };
 
+export type ProviderQuotaUnit = "tokens" | "credits" | "percent" | "requests" | "mixed" | "";
+
+export type ProviderSummaryDTO = {
+  total: number;
+  available: number;
+  quotaUsed: number;
+  quotaLimit: number;
+  usagePercent: number;
+  quotaKnown: boolean;
+  quotaUnit: ProviderQuotaUnit;
+};
+
 export type AccountSummaryDTO = {
   total: number;
   available: number;
   recovering: number;
   attention: number;
   risk: number;
-  providers: Record<AccountProvider, { total: number; available: number }>;
+  providers: Record<AccountProvider, ProviderSummaryDTO>;
   recovery: { cooldown: number; waitingReset: number; probing: number };
   issues: { disabled: number; reauthRequired: number };
 };
@@ -196,7 +208,10 @@ const decodeAccount = createValidatedDecoder<AccountDTO>("account", accountValid
 const decodeAccountPage = createPaginatedDecoder<AccountDTO>(accountValidator);
 const decodeAccountSummary = createObjectDecoder<AccountSummaryDTO>("account summary", {
   total: isNumber, available: isNumber, recovering: isNumber, attention: isNumber, risk: isNumber,
-  providers: isRecordOf(hasShape({ total: isNumber, available: isNumber })),
+  providers: isRecordOf(hasShape({
+    total: isNumber, available: isNumber, quotaUsed: isNumber, quotaLimit: isNumber, usagePercent: isNumber, quotaKnown: isBoolean,
+    quotaUnit: isOneOf("tokens", "credits", "percent", "requests", "mixed", ""),
+  })),
   recovery: hasShape({ cooldown: isNumber, waitingReset: isNumber, probing: isNumber }),
   issues: hasShape({ disabled: isNumber, reauthRequired: isNumber }),
 });
@@ -540,6 +555,10 @@ export function exportSelectedAccounts(provider: AccountProvider, ids: string[])
   return apiDownload("/api/admin/v1/accounts/export", { method: "POST", body: { provider, ids } });
 }
 
+export function exportAccount(id: string): Promise<Blob> {
+  return apiDownload(`/api/admin/v1/accounts/${id}/export`);
+}
+
 export function updateAccountsEnabled(ids: string[], enabled: boolean, provider: AccountProvider): Promise<{ updated: number }> {
   return apiRequest("/api/admin/v1/accounts/batch", { method: "PATCH", body: { ids, enabled, provider } }, decodeCountResult<{ updated: number }>("updated"));
 }
@@ -633,6 +652,24 @@ export function deleteAccounts(ids: string[], provider: AccountProvider, linkedD
       deletedByProvider: isOptional(isRecordOf(isNumber)),
     }),
   );
+}
+
+export type BotFlaggedSummaryDTO = {
+  marked: number;
+  total: number;
+};
+
+const decodeBotFlaggedSummary = createObjectDecoder<BotFlaggedSummaryDTO>("bot flagged summary", {
+  marked: isNumber,
+  total: isNumber,
+});
+
+export function getBotFlaggedSummary(): Promise<BotFlaggedSummaryDTO> {
+  return apiRequest("/api/admin/v1/accounts/bot-flagged/summary", {}, decodeBotFlaggedSummary);
+}
+
+export function deleteBotFlaggedAccounts(): Promise<{ deleted: number }> {
+  return apiRequest("/api/admin/v1/accounts/bot-flagged", { method: "DELETE" }, decodeCountResult<{ deleted: number }>("deleted"));
 }
 
 export function startDeviceAuthorization(): Promise<DeviceSessionDTO> {

@@ -155,3 +155,10 @@ func TestPreviewCleanupCountsWithoutDeleting(t *testing.T) {
 		t.Fatal("empty statuses preview unexpectedly succeeded")
 	}
 }
+
+func TestCleanupAccountsRejectsBotFlaggedForNonBuild(t *testing.T) {
+	service := NewService(nil, nil, nil, nil, nil, nil, nil)
+	if _, err := service.CleanupAccounts(context.Background(), accountdomain.ProviderWeb, []CleanupStatus{CleanupStatusBotFlagged}, nil); err == nil {
+		t.Fatal("bot flagged cleanup for non-build unexpectedly succeeded")
+	}
+}
