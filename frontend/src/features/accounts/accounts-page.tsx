@@ -45,9 +45,11 @@ import {
   enableWebAccountNSFW,
   convertWebAccountsToBuild,
   detectBuildAccounts,
+  exportAccount,
   exportAccountBatch,
   exportSelectedAccounts,
   getAccountSummary,
+  getBotFlaggedSummary,
   importAccounts,
   importConsoleAccounts,
   importWebAccounts,
@@ -85,6 +87,7 @@ import {
   type WebAccountScriptActions,
   type WebAccountScriptsInput,
   type DeviceSessionDTO,
+  type ProviderSummaryDTO,
   type QuotaDTO,
 } from "@/features/accounts/accounts-api";
 import { AccountQuota, ConsoleQuota, WebQuota } from "@/features/accounts/account-quota";
@@ -725,6 +728,15 @@ export function AccountsPage() {
     onError: showError,
   });
 
+  const exportOneMutation = useMutation({
+    mutationFn: (id: string) => exportAccount(id),
+    onSuccess: (blob, id) => {
+      downloadNamedExport(blob, `grok2api-account-${id}-${new Date().toISOString().slice(0, 10)}.json`);
+      toast.success(t("accounts.exported"));
+    },
+    onError: showError,
+  });
+
   const batchUpdateMutation = useMutation({
     mutationFn: (enabled: boolean) => updateAccountsEnabled([...selected], enabled, provider),
     onSuccess: () => {
@@ -844,6 +856,14 @@ export function AccountsPage() {
     onError: showError,
   });
 
+  const botFlaggedSummaryQuery = useQuery({
+    queryKey: ["accounts", "bot-flagged", "summary"],
+    queryFn: getBotFlaggedSummary,
+    enabled: cleanupOpen && provider === "grok_build",
+    staleTime: 0,
+    gcTime: 0,
+  });
+
   const batchDeleteMutation = useMutation({
     // Snapshot selection/targets at click time; dialog unmount/reset must not empty targets.
     mutationFn: (input: { ids: string[]; provider: AccountProvider; linkedDeleteTargets: AccountProvider[] }) =>
@@ -912,6 +932,7 @@ export function AccountsPage() {
       setCleanupOpen(false);
       resetCleanupState();
       invalidateAccountData();
+      void queryClient.invalidateQueries({ queryKey: ["accounts", "bot-flagged", "summary"] });
       const linked = result.linkedDeleted ?? 0;
       const skipped = result.skipped ?? 0;
       if (linked > 0 || skipped > 0) {
@@ -1180,9 +1201,10 @@ export function AccountsPage() {
   const invalidAccounts = summary?.issues.reauthRequired ?? 0;
   const riskAccounts = summary?.risk ?? 0;
   const abnormalAccounts = recoveringAccounts + disabledAccounts + invalidAccounts;
-  const buildSummary = summary?.providers.grok_build ?? { total: 0, available: 0 };
-  const webSummary = summary?.providers.grok_web ?? { total: 0, available: 0 };
-  const consoleSummary = summary?.providers.grok_console ?? { total: 0, available: 0 };
+  const emptyProviderSummary: ProviderSummaryDTO = { total: 0, available: 0, quotaUsed: 0, quotaLimit: 0, usagePercent: 0, quotaKnown: false, quotaUnit: "" };
+  const buildSummary = summary?.providers.grok_build ?? emptyProviderSummary;
+  const webSummary = summary?.providers.grok_web ?? emptyProviderSummary;
+  const consoleSummary = summary?.providers.grok_console ?? emptyProviderSummary;
   const summaryLoading = summaryQuery.isPending;
   const summaryUnavailable = summaryQuery.isError;
   const abnormalBreakdown = [
@@ -1277,6 +1299,37 @@ export function AccountsPage() {
   const detectInvalidItems = detectItems.filter((item) => item.outcome === "invalid");
   const detectVisibleItems = detectMode === "selected" ? detectItems : detectInvalidItems;
 
+  function providerQuotaDetail(providerSummary: ProviderSummaryDTO): { text: string; quotaTooltip?: string } {
+    const routable = t("accounts.routableAccountCount", { count: formatNumber(providerSummary.available, i18n.language, 0) });
+    if (summaryUnavailable) return { text: routable };
+    if (!providerSummary.quotaKnown) return { text: `${routable} · ${t("accounts.quotaUsageUnknown")}` };
+    const percentText = t("accounts.quotaUsagePercent", { percent: formatNumber(providerSummary.usagePercent, i18n.language, 1) });
+    const used = formatNumber(providerSummary.quotaUsed, i18n.language, providerSummary.quotaUnit === "percent" ? 1 : 0);
+    const limit = formatNumber(providerSummary.quotaLimit, i18n.language, providerSummary.quotaUnit === "percent" ? 1 : 0);
+    let quotaTooltip: string | undefined;
+    switch (providerSummary.quotaUnit) {
+      case "tokens":
+        quotaTooltip = t("accounts.quotaUsageTokensTooltip", { used, limit });
+        break;
+      case "credits":
+        quotaTooltip = t("accounts.quotaUsageCreditsTooltip", { used, limit });
+        break;
+      case "requests":
+        quotaTooltip = t("accounts.quotaUsageRequestsTooltip", { used, limit });
+        break;
+      case "percent":
+        quotaTooltip = t("accounts.quotaUsagePercentTooltip", { used, limit });
+        break;
+      default:
+        break;
+    }
+    return { text: `${routable} · ${percentText}`, quotaTooltip };
+  }
+
+  const buildQuotaDetail = providerQuotaDetail(buildSummary);
+  const webQuotaDetail = providerQuotaDetail(webSummary);
+  const consoleQuotaDetail = providerQuotaDetail(consoleSummary);
+
   return (
     <div className="space-y-5">
       <header className="flex min-h-8 items-center">
@@ -1284,9 +1337,36 @@ export function AccountsPage() {
         <p className="sr-only">{t("console.accountsDescription")}</p>
       </header>
       <section className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
-        <AccountMetricPanel tone="text-quota-product-1" icon={<SquareTerminal />} loading={summaryLoading} label={t("accounts.buildAccountCount")} value={summaryUnavailable ? "-" : formatNumber(buildSummary.total, i18n.language, 0)} detail={t("accounts.routableAccountCount", { count: formatNumber(buildSummary.available, i18n.language, 0) })} />
-        <AccountMetricPanel tone="text-quota-product-2" icon={<Compass />} loading={summaryLoading} label={t("accounts.webAccountCount")} value={summaryUnavailable ? "-" : formatNumber(webSummary.total, i18n.language, 0)} detail={t("accounts.routableAccountCount", { count: formatNumber(webSummary.available, i18n.language, 0) })} />
-        <AccountMetricPanel tone="text-quota-product-4" icon={<Webhook />} loading={summaryLoading} label={t("accounts.consoleAccountCount")} value={summaryUnavailable ? "-" : formatNumber(consoleSummary.total, i18n.language, 0)} detail={t("accounts.routableAccountCount", { count: formatNumber(consoleSummary.available, i18n.language, 0) })} />
+        <AccountMetricPanel
+          tone="text-quota-product-1"
+          icon={<SquareTerminal />}
+          loading={summaryLoading}
+          label={t("accounts.buildAccountCount")}
+          value={summaryUnavailable ? "-" : formatNumber(buildSummary.total, i18n.language, 0)}
+          detail={buildQuotaDetail.text}
+          detailTooltip={buildQuotaDetail.quotaTooltip}
+          usagePercent={summaryUnavailable || !buildSummary.quotaKnown ? undefined : buildSummary.usagePercent}
+        />
+        <AccountMetricPanel
+          tone="text-quota-product-2"
+          icon={<Compass />}
+          loading={summaryLoading}
+          label={t("accounts.webAccountCount")}
+          value={summaryUnavailable ? "-" : formatNumber(webSummary.total, i18n.language, 0)}
+          detail={webQuotaDetail.text}
+          detailTooltip={webQuotaDetail.quotaTooltip}
+          usagePercent={summaryUnavailable || !webSummary.quotaKnown ? undefined : webSummary.usagePercent}
+        />
+        <AccountMetricPanel
+          tone="text-quota-product-4"
+          icon={<Webhook />}
+          loading={summaryLoading}
+          label={t("accounts.consoleAccountCount")}
+          value={summaryUnavailable ? "-" : formatNumber(consoleSummary.total, i18n.language, 0)}
+          detail={consoleQuotaDetail.text}
+          detailTooltip={consoleQuotaDetail.quotaTooltip}
+          usagePercent={summaryUnavailable || !consoleSummary.quotaKnown ? undefined : consoleSummary.usagePercent}
+        />
         <AccountMetricPanel
           tone={abnormalAccounts > 0 ? "text-amber-600 dark:text-amber-400" : "text-muted-foreground"}
           icon={<TriangleAlert />}
@@ -1507,7 +1587,8 @@ export function AccountsPage() {
                           <TooltipContent>{account.expiresAt ? t("accountCredential.expiresAt", { time: formatDateTime(account.expiresAt, i18n.language) }) : t("accountCredential.expiryUnknown")}</TooltipContent>
                         </Tooltip>
                       ) : <span className="font-medium text-amber-700 dark:text-amber-300">{t("accountCredential.noAutoRefresh")}</span>}
-	                    </TableCell> : null}
+                      <div className="mt-0.5 text-muted-foreground">{t(`accounts.buildRouteMode.${account.buildRouteMode}`)}</div>
+                    </TableCell> : null}
                     <TableCell className="whitespace-nowrap text-xs text-muted-foreground">{formatDateTime(account.createdAt, i18n.language)}</TableCell>
                     <TableActionCell>
                       <DropdownMenu>
@@ -1529,6 +1610,7 @@ export function AccountsPage() {
                             </DropdownMenuItem>
                           ) : null}
                           <DropdownMenuItem onClick={() => provider === "grok_build" ? billingMutation.mutate(account.id) : quotaMutation.mutate(account.id)}><RefreshCw />{provider === "grok_build" ? t("accounts.refreshBilling") : t("accounts.refreshModeQuota")}</DropdownMenuItem>
+                          {provider === "grok_build" ? <DropdownMenuItem onClick={() => exportOneMutation.mutate(account.id)}><Download />{t("accounts.exportOne")}</DropdownMenuItem> : null}
                           <DropdownMenuSeparator />
                           <DropdownMenuItem className="text-destructive focus:text-destructive" onClick={() => { resetLinkedDeleteState(); setDeleting(account); }}><Trash2 />{t("common.delete")}</DropdownMenuItem>
                         </DropdownMenuContent>
@@ -2185,6 +2267,34 @@ export function AccountsPage() {
                 </label>
               );
             })}
+            {provider === "grok_build" ? (
+              <label className="flex cursor-pointer items-center gap-3 rounded-md bg-muted/40 px-3 py-2.5 text-xs">
+                <Checkbox
+                  checked={cleanupStatuses.has("botFlagged")}
+                  disabled={cleanupMutation.isPending}
+                  onCheckedChange={(checked) => {
+                    setCleanupStatuses((current) => {
+                      const next = new Set(current);
+                      if (checked === true) next.add("botFlagged"); else next.delete("botFlagged");
+                      return next;
+                    });
+                    setCleanupPreviewError(false);
+                  }}
+                />
+                <span className="min-w-0 flex-1">
+                  <span>{t("accounts.cleanupBotFlagged")}</span>
+                  <span className="mt-0.5 block text-[11px] text-muted-foreground">
+                    {botFlaggedSummaryQuery.isPending
+                      ? t("accounts.removeBotFlaggedLoading")
+                      : botFlaggedSummaryQuery.isError
+                        ? botFlaggedSummaryQuery.error.message
+                        : botFlaggedSummaryQuery.data && botFlaggedSummaryQuery.data.marked > 0
+                          ? t("accounts.cleanupBotFlaggedCount", botFlaggedSummaryQuery.data)
+                          : t("accounts.removeBotFlaggedNone")}
+                  </span>
+                </span>
+              </label>
+            ) : null}
           </div>
 
           {/* Smooth-expand linked deletion block, shown once any status is selected. */}
@@ -2269,10 +2379,14 @@ export function AccountsPage() {
 }
 
 function downloadAccountExport(blob: Blob, provider: AccountProvider, suffix: string): void {
+  downloadNamedExport(blob, `grok2api-${provider.replaceAll("_", "-")}-accounts-${suffix}-${new Date().toISOString().slice(0, 10)}.json`);
+}
+
+function downloadNamedExport(blob: Blob, filename: string): void {
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = url;
-  anchor.download = `grok2api-${provider.replaceAll("_", "-")}-accounts-${suffix}-${new Date().toISOString().slice(0, 10)}.json`;
+  anchor.download = filename;
   anchor.click();
   window.setTimeout(() => URL.revokeObjectURL(url), 0);
 }
@@ -2287,15 +2401,31 @@ function accountProviderPrimaryEgressScope(provider: AccountProvider): EgressSco
   return provider;
 }
 
-function AccountMetricPanel({ icon, label, value, detail, detailItems, loading, tone }: {
+function AccountMetricPanel({ icon, label, value, detail, detailItems, detailTooltip, loading, tone, usagePercent }: {
   icon: ReactNode;
   label: string;
   value: string;
   detail: string;
   detailItems?: Array<{ label: string; value: string; tone?: string }>;
+  detailTooltip?: string;
   loading: boolean;
   tone: string;
+  usagePercent?: number;
 }) {
+  const showQuota = usagePercent !== undefined && !loading;
+  const percent = showQuota ? Math.max(0, Math.min(100, usagePercent)) : 0;
+  const detailNode = detailTooltip ? (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button type="button" className="max-w-full truncate text-left text-[11px] text-muted-foreground underline decoration-dotted underline-offset-2 transition-colors hover:text-foreground">
+          {detail}
+        </button>
+      </TooltipTrigger>
+      <TooltipContent>{detailTooltip}</TooltipContent>
+    </Tooltip>
+  ) : (
+    <p className="min-h-4 truncate text-[11px] text-muted-foreground" title={detail}>{detail}</p>
+  );
   return (
     <div className="min-h-28 rounded-lg bg-card p-4" aria-busy={loading}>
       <div className="flex min-h-5 items-center justify-between gap-3">
@@ -2313,8 +2443,13 @@ function AccountMetricPanel({ icon, label, value, detail, detailItems, loading, 
           ))}
         </div>
       ) : (
-        <p className={cn("mt-1.5 min-h-4 truncate text-[11px] text-muted-foreground", loading && "invisible")} title={detail}>{detail}</p>
+        <div className={cn("mt-1.5 min-h-4", loading && "invisible")}>{detailNode}</div>
       )}
+      {showQuota ? (
+        <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-muted" aria-hidden>
+          <div className="h-full bg-primary transition-[width] duration-300" style={{ width: `${percent}%` }} />
+        </div>
+      ) : null}
     </div>
   );
 }

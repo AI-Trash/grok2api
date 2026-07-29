@@ -136,6 +136,8 @@ func (h *Handler) Register(router *gin.RouterGroup) {
 	router.GET("/accounts/summary", h.summary)
 	router.GET("/accounts/export", h.exportCredentials)
 	router.POST("/accounts/export", h.exportSelectedCredentials)
+	router.GET("/accounts/bot-flagged/summary", h.botFlaggedSummary)
+	router.DELETE("/accounts/bot-flagged", h.deleteBotFlagged)
 	router.GET("/accounts/:id", h.get)
 	router.POST("/accounts/device/start", h.startDevice)
 	router.POST("/accounts/device/:sessionId/poll", h.pollDevice)
@@ -166,6 +168,7 @@ func (h *Handler) Register(router *gin.RouterGroup) {
 	router.PATCH("/accounts/:id", h.update)
 	router.DELETE("/accounts/:id", h.delete)
 	router.POST("/accounts/:id/clear-cooldown", h.clearCooldown)
+	router.GET("/accounts/:id/export", h.exportCredential)
 	router.POST("/accounts/:id/refresh-token", h.refreshToken)
 	router.POST("/accounts/:id/refresh-billing", h.refreshBilling)
 	router.POST("/accounts/:id/refresh-quota", h.refreshWebQuota)
@@ -445,13 +448,22 @@ func (h *Handler) summary(c *gin.Context) {
 	response.Success(c, http.StatusOK, gin.H{
 		"total": value.Total, "available": value.Available, "recovering": value.Recovering, "attention": value.Attention, "risk": value.Risk,
 		"providers": gin.H{
-			string(accountdomain.ProviderBuild):   gin.H{"total": build.Total, "available": build.Available},
-			string(accountdomain.ProviderWeb):     gin.H{"total": web.Total, "available": web.Available},
-			string(accountdomain.ProviderConsole): gin.H{"total": console.Total, "available": console.Available},
+			string(accountdomain.ProviderBuild):   providerSummaryResponse(build),
+			string(accountdomain.ProviderWeb):     providerSummaryResponse(web),
+			string(accountdomain.ProviderConsole): providerSummaryResponse(console),
 		},
 		"recovery": gin.H{"cooldown": value.Recovery.Cooldown, "waitingReset": value.Recovery.WaitingReset, "probing": value.Recovery.Probing},
 		"issues":   gin.H{"disabled": value.Issues.Disabled, "reauthRequired": value.Issues.ReauthRequired},
 	})
+}
+
+func providerSummaryResponse(value accountapp.ProviderSummary) gin.H {
+	return gin.H{
+		"total": value.Total, "available": value.Available,
+		"quotaUsed": value.QuotaUsed, "quotaLimit": value.QuotaLimit,
+		"usagePercent": value.UsagePercent, "quotaKnown": value.QuotaKnown,
+		"quotaUnit": value.QuotaUnit,
+	}
 }
 
 func (h *Handler) batchUpdate(c *gin.Context) {
@@ -1200,6 +1212,24 @@ func (h *Handler) exportCredentials(c *gin.Context) {
 	h.writeCredentialExport(c, providerValue, result)
 }
 
+func (h *Handler) botFlaggedSummary(c *gin.Context) {
+	summary, err := h.service.BotFlaggedSummary(c.Request.Context())
+	if err != nil {
+		h.writeServiceError(c, "accountSummaryFailed", err, http.StatusInternalServerError, "统计风控账号失败")
+		return
+	}
+	response.Success(c, http.StatusOK, gin.H{"marked": summary.Marked, "total": summary.Total})
+}
+
+func (h *Handler) deleteBotFlagged(c *gin.Context) {
+	deleted, err := h.service.DeleteBotFlaggedAccounts(c.Request.Context())
+	if err != nil {
+		h.writeServiceError(c, "accountDeleteFailed", err, http.StatusInternalServerError, "删除风控账号失败")
+		return
+	}
+	response.Success(c, http.StatusOK, gin.H{"deleted": deleted})
+}
+
 func (h *Handler) exportSelectedCredentials(c *gin.Context) {
 	var request credentialExportRequest
 	if c.ShouldBindJSON(&request) != nil {
@@ -1220,8 +1250,25 @@ func (h *Handler) exportSelectedCredentials(c *gin.Context) {
 	h.writeCredentialExport(c, providerValue, result)
 }
 
+func (h *Handler) exportCredential(c *gin.Context) {
+	id, ok := pathID(c)
+	if !ok {
+		return
+	}
+	result, err := h.service.ExportCredential(c.Request.Context(), id)
+	if err != nil {
+		h.writeServiceError(c, "accountExportFailed", err, http.StatusInternalServerError, "导出账号失败")
+		return
+	}
+	h.writeCredentialExportFile(c, "grok2api-account-"+strconv.FormatUint(id, 10)+"-"+time.Now().UTC().Format("20060102T150405Z")+".json", result)
+}
+
 func (h *Handler) writeCredentialExport(c *gin.Context, providerValue accountdomain.Provider, result accountapp.ExportResult) {
 	filename := "grok2api-" + string(providerValue) + "-accounts-" + time.Now().UTC().Format("20060102T150405Z") + ".json"
+	h.writeCredentialExportFile(c, filename, result)
+}
+
+func (h *Handler) writeCredentialExportFile(c *gin.Context, filename string, result accountapp.ExportResult) {
 	c.Header("Cache-Control", "no-store")
 	c.Header("Pragma", "no-cache")
 	c.Header("Access-Control-Expose-Headers", "Content-Disposition, X-Exported-Accounts, X-Export-Next-ID, X-Export-Snapshot-Max-ID, X-Export-Has-More")
